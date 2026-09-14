@@ -1,0 +1,15 @@
+services:
+  gateway:
+    build:
+      context: .
+    image: llmgateway:latest
+    container_name: llmgateway
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN}
+      DB_PATH: /data/gateway.db
+    volumes:
+      - ../gateway-data:/data

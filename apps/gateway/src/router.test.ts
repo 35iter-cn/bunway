@@ -1,0 +1,145 @@
+import { describe, test, expect } from "bun:test";
+import { openDb } from "./db";
+import { Router, classifyError } from "./router";
+import type { Database } from "bun:sqlite";
+
+function setup(): { db: Database; router: Router } {
+  const db = openDb(":memory:");
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'primary','http://p','k')").run();
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'backup','http://b','k')").run();
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (3,'last','http://l','k')").run();
+  const insRoute = db.query(
+    "INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES (?,?,?,?)"
+  );
+  insRoute.run("glm", 1, "glm", 10);
+  insRoute.run("glm", 2, "glm", 5);
+  insRoute.run("glm", 3, "glm", 1);
+  let cooldown = 5;
+  const router = new Router(db, () => cooldown);
+  return { db, router };
+}
+
+describe("classifyError", () => {
+  test("4xx matrix per spec", () => {
+    expect(classifyError(401)).toBe("unavailable");
+    expect(classifyError(402)).toBe("unavailable");
+    expect(classifyError(403)).toBe("unavailable");
+    expect(classifyError(429)).toBe("unavailable");
+    expect(classifyError(400)).toBe("nofailover");
+    expect(classifyError(404)).toBe("nofailover");
+    expect(classifyError(422)).toBe("nofailover");
+  });
+  test("5xx / network / timeout → cooldown", () => {
+    expect(classifyError(500)).toBe("cooldown");
+    expect(classifyError(502)).toBe("cooldown");
+    expect(classifyError(null, new Error("timeout"))).toBe("cooldown");
+    expect(classifyError(null)).toBe("cooldown");
+  });
+  test("2xx → ok", () => {
+    expect(classifyError(200)).toBe("ok");
+  });
+});
+
+describe("Router.pick", () => {
+  test("priority descending", () => {
+    const { router } = setup();
+    const picked = router.pick("glm");
+    expect(picked.map((p) => p.provider.name)).toEqual(["primary", "backup", "last"]);
+  });
+
+  test("unavailable and cooldown skipped", () => {
+    const { router } = setup();
+    const picked = router.pick("glm");
+    router.markResult(picked[0], "unavailable");
+    router.markResult(picked[1], "cooldown");
+    const after = router.pick("glm");
+    expect(after.map((p) => p.provider.name)).toEqual(["last"]);
+  });
+
+  test("cooldown expires → back in pool", () => {
+    const { router } = setup();
+    const [primary] = router.pick("glm");
+    router.markResult(primary, "cooldown");
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
+    const later = Date.now() + 6 * 60_000;
+    expect(router.pick("glm", later).map((p) => p.provider.name)).toEqual(["primary", "backup", "last"]);
+  });
+
+  test("invalidate picks up new config", () => {
+    const { db, router } = setup();
+    db.query("UPDATE providers SET enabled=0 WHERE name='primary'").run();
+    router.invalidate();
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
+  });
+
+  test("disabled provider excluded entirely", () => {
+    const { router } = setup();
+    const [primary] = router.pick("glm");
+    router.markResult(primary, "unavailable");
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
+  });
+
+  test("unknown model → empty", () => {
+    const { router } = setup();
+    expect(router.pick("nope")).toEqual([]);
+  });
+
+  test("cooldown not extended by repeated failures", () => {
+    const { router } = setup();
+    const [primary] = router.pick("glm");
+    const t0 = Date.now();
+    router.markResult(primary, "cooldown", t0);
+    router.markResult(primary, "cooldown", t0 + 30_000);
+    router.markResult(primary, "cooldown", t0 + 59_000);
+    expect(router.pick("glm", t0 + 6 * 60_000).map((p) => p.provider.name)).toEqual(["primary", "backup", "last"]);
+  });
+
+  test("cooldown uses injectable minutes", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'p','http://x','k')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES ('m',1,'m',1)").run();
+    let minutes = 5;
+    const router = new Router(db, () => minutes);
+    const [p] = router.pick("m");
+    router.markResult(p, "cooldown");
+    expect(router.pick("m", Date.now() + 4 * 60_000)).toEqual([]);
+    expect(router.pick("m", Date.now() + 6 * 60_000).length).toBe(1);
+    minutes = 30;
+    router.markAvailable(p);
+    router.markResult(p, "cooldown");
+    expect(router.pick("m", Date.now() + 6 * 60_000)).toEqual([]);
+    expect(router.pick("m", Date.now() + 31 * 60_000).length).toBe(1);
+  });
+});
+describe("Router.states", () => {
+  test("reflects cooldown and unavailable for API exposure", () => {
+    const { router } = setup();
+    const [primary] = router.pick("glm");
+    expect(router.states()[1]).toEqual({ unavailable: false, cooldown_until: 0 });
+    router.markResult(primary, "cooldown");
+    expect(router.states()[1].cooldown_until).toBeGreaterThan(Date.now());
+    router.markResult(primary, "unavailable");
+    expect(router.states()[1]).toEqual({ unavailable: true, cooldown_until: 0 });
+  });
+});
+
+describe("Router.reload pricing gate", () => {
+  test("route with unparseable pricing is dropped, valid siblings survive", () => {
+    const { db, router } = setup();
+    expect(router.routeFor(router.pick("glm")[0], "glm").pricing.default.price_input).toBe(0);
+    db.query("UPDATE routes SET pricing='{oops' WHERE provider_id=1").run();
+    db.query(
+      `UPDATE routes SET pricing='{"default":{"price_input":0.3,"price_output":1.2,"price_cache_read":0.006,"price_cache_write":0}}' WHERE provider_id=2`
+    ).run();
+    router.invalidate();
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
+    expect(router.routeFor(router.pick("glm")[0], "glm").pricing.default.price_output).toBe(1.2);
+  });
+
+  test("provider whose only route is invalid disappears from candidates", () => {
+    const { db, router } = setup();
+    db.query("UPDATE routes SET pricing='nope' WHERE provider_id=3").run();
+    router.invalidate();
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["primary", "backup"]);
+  });
+});

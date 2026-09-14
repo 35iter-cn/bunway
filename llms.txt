@@ -1,0 +1,24 @@
+# bunway
+
+> Self-hosted LLM gateway on Bun: OpenAI-compatible endpoint, priority failover
+> across upstreams, SQLite billing, single-container dashboard.
+
+bunway speaks the OpenAI chat completions API on /v1/chat/completions, so any
+OpenAI SDK works by changing the base URL to http://localhost:3001/v1. Requests
+are routed across upstream providers in priority order: a failing provider is
+marked unavailable or put into cooldown and traffic spills to the next one.
+Every request is priced per token (input, output, cache read, cache write) and
+recorded in SQLite; the built-in /console dashboard shows KPIs, request
+trends, per-provider routing state, and error events. The gateway has zero npm
+runtime dependencies — it runs on Bun alone — and ships as a single Docker
+image. You can try the whole thing without any real API key: the bundled demo
+stack starts a mock upstream and pre-seeds data, and docs/deploy.md walks
+through deployment and verification step by step, each step with the command
+and the expected output. Note that the admin API and /console are meant for a
+trusted network; do not expose the admin port directly to the public internet.
+
+## Docs
+
+- [Deploy and verify](docs/deploy.md): step-by-step with expected output
+- [Chinese README](README.zh-CN.md): 中文说明
+- [Source overview](AGENTS.md): repository layout and dev commands

@@ -1,0 +1,231 @@
+<script>
+  import { localHM, dayMark, dayList, localWindow, windowLabel, offsetLabel } from "./fmt.js";
+
+  let { providers = [], routes = [], pricing = [], settings = [], token = "", onreload = () => {} } = $props();
+
+  let pending = $state(null);
+  let dragKey = $state(null);
+  let dragModel = $state(null);
+  let overKey = $state(null);
+  let saveErr = $state(null);
+
+  const PALETTE = ["var(--blue)", "var(--green)", "var(--amber)"];
+  const STATE_TEXT = { ok: "正常", cool: "冷却中", dead: "不可用", off: "已禁用" };
+
+  let now = $state(Date.now());
+
+  const cfg = $derived(Object.fromEntries(settings.map((s) => [s.key, s.value])));
+  const cooldownMin = $derived(cfg.cooldown_minutes_5xx ?? "5");
+  const probeMin = $derived(cfg.test_interval_minutes ?? "60");
+
+  const groups = $derived.by(() => {
+    const by = new Map();
+    for (const r of routes) {
+      if (!by.has(r.gateway_model)) by.set(r.gateway_model, []);
+      by.get(r.gateway_model).push(r);
+    }
+    return [...by.entries()]
+      .map(([model, list]) => ({ model, cands: [...list].sort((a, b) => b.priority - a.priority) }))
+      .sort((a, b) => a.model.localeCompare(b.model));
+  });
+
+  const usd = (n, digits = 2) => "$" + Number(n ?? 0).toFixed(digits);
+  const tzOffset = -new Date().getTimezoneOffset();
+  const dur = (ms) => {
+    const m = Math.max(0, Math.round(ms / 60000));
+    return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m` : `${m}m`;
+  };
+  const rk = (c) => `${c.provider_id}|${c.gateway_model}|${c.provider_model}`;
+  const entryOf = (c) => pricing.find((e) => rk(e) === rk(c));
+  const pricesOf = (c) => entryOf(c)?.now.prices ?? c.pricing?.default ?? {};
+  const ruleOf = (c) => entryOf(c)?.now.rule ?? -1;
+  const nextOf = (c) => entryOf(c)?.next_switch ?? null;
+  const tierLabel = (rule) => (rule < 0 ? "默认档" : `规则${"①②③④⑤"[rule] ?? rule + 1}`);
+  const tiersOf = (c) => [
+    { rule: -1, prices: c.pricing?.default ?? {} },
+    ...(c.pricing?.rules ?? []).map((r, i) => ({ rule: i, prices: { ...c.pricing.default, ...r } })),
+  ];
+  const tierMark = (c, rule) => {
+    if (rule === ruleOf(c)) return "当前";
+    const next = nextOf(c);
+    return next && next.rule === rule ? `${dayMark(next.ts, now)} ${localHM(next.ts)} 起` : "";
+  };
+  const tierWindow = (c, rule) => {
+    const w = c.pricing.rules[rule];
+    return `${dayList(w.days, localWindow(w.windows[0]).dayShift)}${w.windows.map(windowLabel).join(" · ")}`;
+  };
+  const provOf = (id) => providers.find((p) => p.id === id);
+  const stateOf = (p) => (!p ? "ok" : p.enabled === 0 ? "off" : p.unavailable ? "dead" : p.cooldown_until > now ? "cool" : "ok");
+  const color = (id) => PALETTE[Math.max(0, providers.findIndex((p) => p.id === id)) % PALETTE.length];
+  const routesOf = (id) => routes.filter((r) => r.provider_id === id);
+  const fwd = (p) => {
+    try {
+      return JSON.parse(p.meta || "{}").forward_headers ?? [];
+    } catch {
+      return [];
+    }
+  };
+  const left = (p) => Math.max(0, Math.ceil((p.cooldown_until - now) / 1000));
+  const effective = (cands) => cands.findIndex((c) => stateOf(provOf(c.provider_id)) === "ok");
+
+  const ordered = (g) =>
+    pending?.model === g.model ? pending.order.map((k) => g.cands.find((c) => rk(c) === k)).filter(Boolean) : g.cands;
+
+  function dragStart(g, c) {
+    if (g.cands.length < 2) return;
+    dragKey = rk(c);
+    dragModel = g.model;
+  }
+
+  function dragOver(e, g, c) {
+    if (dragModel !== g.model) return;
+    e.preventDefault();
+    overKey = rk(c);
+  }
+
+  function dragEnd() {
+    dragKey = null;
+    dragModel = null;
+    overKey = null;
+  }
+
+  function drop(g, target) {
+    const list = ordered(g);
+    const from = list.findIndex((c) => rk(c) === dragKey);
+    dragEnd();
+    if (from < 0 || from === target) return;
+    const order = list.map(rk);
+    order.splice(target, 0, order.splice(from, 1)[0]);
+    const moved = list[from];
+    pending = {
+      model: g.model,
+      order,
+      label: `${g.model}：${moved.provider_name ?? moved.provider_id} 第 ${from + 1} 位 → 第 ${target + 1} 位`,
+    };
+  }
+
+  const cancel = () => (pending = null);
+
+  async function commit(g) {
+    const list = ordered(g);
+    const n = list.length;
+    saveErr = null;
+    for (const [i, c] of list.entries()) {
+      const priority = (n - i) * 5;
+      if (priority === c.priority) continue;
+      const q = new URLSearchParams({
+        gateway_model: c.gateway_model,
+        provider_id: String(c.provider_id),
+        provider_model: c.provider_model,
+      });
+      try {
+        const res = await fetch(`/admin/routes?${q}`, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ priority }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        saveErr = { model: g.model, msg: `${c.provider_name ?? c.provider_id} 优先级写入失败：${e.message}` };
+        break;
+      }
+    }
+    try {
+      await onreload();
+    } finally {
+      pending = null;
+    }
+  }
+
+  const summary = $derived.by(() => {
+    const c = { ok: 0, cool: 0, dead: 0, off: 0 };
+    for (const p of providers) c[stateOf(p)]++;
+    return c;
+  });
+
+  $effect(() => {
+    if (!providers.some((p) => p.cooldown_until > now) && !pricing.some((e) => e.next_switch)) return;
+    const iv = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(iv);
+  });
+</script>
+
+{#each groups as g (g.model)}
+  {@const eff = effective(ordered(g))}
+  <div class="rt-row">
+    <span class="gm">
+      {g.model}
+      <small>
+        {g.cands.length} 候选{#if eff < 0}<span class="bad-cap"> · 全部不可用 → 502</span>{/if}
+      </small>
+    </span>
+    <div class="chain" role="list">
+      {#each ordered(g) as c, i (rk(c))}
+        {@const p = provOf(c.provider_id)}
+        {@const st = stateOf(p)}
+        {@const price = pricesOf(c)}
+        {@const rule = ruleOf(c)}
+        {@const next = nextOf(c)}
+        <span class={i === 0 ? "entry" : "conn"} class:live={i === eff}></span>
+        <span
+          class="node"
+          role="listitem"
+          class:eff={i === eff}
+          class:st-cool={st === "cool"}
+          class:st-dead={st === "dead"}
+          class:st-off={st === "off"}
+          class:drag={dragKey === rk(c)}
+          class:over={overKey === rk(c)}
+          style="--pc:{color(c.provider_id)}"
+          draggable={g.cands.length > 1}
+          ondragstart={() => dragStart(g, c)}
+          ondragover={(e) => dragOver(e, g, c)}
+          ondrop={(e) => {
+            e.preventDefault();
+            drop(g, i);
+          }}
+          ondragend={dragEnd}
+        >
+          <span class="node-card">
+            <b>{c.provider_name ?? p?.name ?? c.provider_id}</b>
+            <small class="price" class:rule={rule >= 0}>{usd(price.price_input)}/{usd(price.price_output)}</small>
+            {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · 剩 {left(p)}s{/if}</span>{/if}
+            {#if i === eff && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
+          </span>
+          <div class="pop">
+            <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · 剩 {left(p)}s{/if}</span></div>
+            <div class="pu">{p?.base_url ?? "?"}</div>
+            <table><tbody>
+              <tr><td>provider_model</td><td>{c.provider_model}</td></tr>
+              <tr><td>priority / 顺序</td><td>{c.priority} / 第 {i + 1} 位</td></tr>
+              {#each tiersOf(c) as t (t.rule)}
+                <tr class:cur={t.rule === ruleOf(c)}>
+                  <td>{tierLabel(t.rule)}{#if tierMark(c, t.rule)}（{tierMark(c, t.rule)}）{/if}</td>
+                  <td>输入 {usd(t.prices.price_input, 3)} · 输出 {usd(t.prices.price_output, 3)}<br />
+                    <span class="note">缓存读 {usd(t.prices.price_cache_read, 3)} · 缓存写 {usd(t.prices.price_cache_write, 3)}</span></td>
+                </tr>
+                {#if t.rule >= 0}<tr class="w"><td colspan="2" class="win">{tierWindow(c, t.rule)}</td></tr>{/if}
+              {/each}
+              {#if fwd(p).length}<tr><td>转接头</td><td class="fw">{fwd(p).join(" · ")}</td></tr>{/if}
+              <tr><td>该 provider 承载路由</td><td>{routesOf(c.provider_id).length} 条</td></tr>
+            </tbody></table>
+            <div class="foot">单价 /1M tokens · 状态实时{#if tzOffset !== 0} · 窗口以 UTC 定义，显示按本地 {offsetLabel()}{/if}</div>
+          </div>
+        </span>
+      {/each}
+      {#if g.cands.length === 1}
+        <span class="conn"></span>
+        <span class="empty-slot">无备援</span>
+      {/if}
+      {#if eff < 0}<span class="bad-cap" style="margin-left:10px">→ 全部不可用 · 502</span>{/if}
+    </div>
+    {#if pending?.model === g.model}
+      <div class="pending">
+        <span>{pending.label}</span>
+        <button class="on" onclick={() => commit(g)}>确认写入</button>
+        <button onclick={cancel}>取消</button>
+      </div>
+    {/if}
+    {#if saveErr?.model === g.model}<div class="rt-err">{saveErr.msg}（已回显服务端真值）</div>{/if}
+  </div>
+{/each}

@@ -1,0 +1,9 @@
+{
+  "name": "bunway",
+  "license": "MIT",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  }
+}

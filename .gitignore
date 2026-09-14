@@ -1,0 +1,7 @@
+node_modules/
+data/
+*.db
+logs/
+.env
+node_modules/
+apps/dashboard/dist/

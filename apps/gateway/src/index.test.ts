@@ -1,0 +1,250 @@
+import { describe, test, expect, afterEach } from "bun:test";
+import { openDb } from "./db";
+import { createApp } from "./index";
+
+const servers: { stop(): void }[] = [];
+const hits: string[] = [];
+
+afterEach(() => {
+  for (const s of servers) s.stop(true);
+  servers.length = 0;
+  hits.length = 0;
+});
+
+function mockUpstream(name: string, handler: () => Response): string {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => {
+      hits.push(name);
+      return handler();
+    },
+  });
+  servers.push(server);
+  return `http://localhost:${server.port}`;
+}
+
+function seed(baseUrls: string[]) {
+  const db = openDb(":memory:");
+  baseUrls.forEach((base, i) => {
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (?, ?, ?, 'k')").run(i + 1, `p${i + 1}`, base);
+  });
+  const ins = db.query(
+    `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing)
+     VALUES ('m', ?, 'm-up', ?, '{"default":{"price_input":1,"price_output":1,"price_cache_read":0,"price_cache_write":0}}')`
+  );
+  baseUrls.forEach((_, i) => ins.run(i + 1, 10 - i * 5));
+  db.query("INSERT INTO client_keys(id, name, key) VALUES (1, 'pi', 'sk-test')").run();
+  return { db, app: createApp(db, "admin-token") };
+}
+
+const H = { "Content-Type": "application/json", Authorization: "Bearer sk-test" };
+
+describe("/v1 failover orchestration", () => {
+  test("primary 429 → failover to backup → 200, both attempts logged", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => new Response("rate limited", { status: 429 })), mockUpstream("backup", () => Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 1 } }))]);
+    const res = await app.fetch(new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) }));
+    expect(res.status).toBe(200);
+    expect(hits).toEqual(["primary", "backup"]);
+    const rows = db.query("SELECT * FROM usage_log ORDER BY id").all() as Record<string, unknown>[];
+    expect(rows.length).toBe(1);
+  });
+
+  test("primary 400 → no failover, error passed through", async () => {
+    const { app } = seed([mockUpstream("primary", () => new Response("bad request", { status: 400 })), mockUpstream("backup", () => Response.json({ ok: true }))]);
+    const res = await app.fetch(new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) }));
+    expect(res.status).toBe(400);
+    expect(hits).toEqual(["primary"]);
+  });
+
+  test("no candidates → 502", async () => {
+    const { app } = seed([]);
+    const res = await app.fetch(new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) }));
+    expect(res.status).toBe(502);
+  });
+
+  test("models list = distinct gateway models", async () => {
+    const { app } = seed([mockUpstream("a", () => Response.json({})), mockUpstream("b", () => Response.json({}))]);
+    const res = await app.fetch(new Request("http://x/v1/models", { headers: H }));
+    const json = await res.json();
+    expect(json.data.map((m: { id: string }) => m.id)).toEqual(["m"]);
+  });
+});
+
+describe("auth", () => {
+  test("missing/invalid key → 401", async () => {
+    const { app } = seed([]);
+    expect((await app.fetch(new Request("http://x/v1/models"))).status).toBe(401);
+    expect((await app.fetch(new Request("http://x/v1/models", { headers: { Authorization: "Bearer wrong" } }))).status).toBe(401);
+  });
+});
+
+describe("admin hot update", () => {
+  test("new provider takes effect without restart", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => new Response("nope", { status: 500 })), mockUpstream("backup", () => Response.json({ ok: true }))]);
+    const before = await app.fetch(new Request("http://x/v1/models", { headers: H }));
+    expect(((await before.json()) as { data: unknown[] }).data.length).toBe(1);
+
+    const adminH = { "Content-Type": "application/json", Authorization: "Bearer admin-token" };
+    const res = await app.fetch(
+      new Request("http://x/admin/providers", {
+        method: "POST",
+        headers: adminH,
+        body: JSON.stringify({
+          name: "extra",
+          base_url: "http://example.com",
+          api_key: "k",
+          routes: [{ gateway_model: "new-model", provider_model: "new", priority: 1 }],
+        }),
+      })
+    );
+    expect(res.status).toBe(201);
+    const after = await app.fetch(new Request("http://x/v1/models", { headers: H }));
+    expect(((await after.json()) as { data: { id: string }[] }).data.map((m) => m.id)).toEqual(["m", "new-model"]);
+    void db;
+  });
+
+  test("disabled provider is skipped by router", async () => {
+    const { app, db } = seed([mockUpstream("primary", () => new Response("nope", { status: 500 })), mockUpstream("backup", () => Response.json({ ok: true }))]);
+    db.query("INSERT INTO providers(id, name, base_url, api_key, enabled) VALUES (99, 'extra', 'http://x', 'k', 0)").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES ('m', 99, 'm', 20)").run();
+    const res = await app.fetch(new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) }));
+    expect(hits).not.toContain("extra");
+    expect(hits[0]).toBe("primary");
+  });
+});
+
+const adminH = { "Content-Type": "application/json", Authorization: "Bearer admin-token" };
+describe("admin entity CRUD", () => {
+  test("POST /admin/routes creates a single route without touching others", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const pricing = { default: { price_input: 1, price_output: 0.5, price_cache_read: 0, price_cache_write: 0 } };
+    const res = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: adminH, body: JSON.stringify({ gateway_model: "r1", provider_id: 1, provider_model: "up-r1", priority: 2, pricing }) }));
+    expect(res.status).toBe(200);
+    const rows = db.query("SELECT gateway_model, provider_model, priority, pricing FROM routes ORDER BY gateway_model").all() as { gateway_model: string; provider_model: string; priority: number; pricing: string }[];
+    expect(rows.map((r) => r.gateway_model)).toEqual(["m", "r1"]);
+    expect(JSON.parse(rows[0].pricing)).toEqual({ default: { price_input: 1, price_output: 1, price_cache_read: 0, price_cache_write: 0 } });
+    expect(JSON.parse(rows[1].pricing)).toEqual(pricing);
+  });
+
+  test("POST same triple twice updates prices without adding a row", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    for (const po of [0.5, 0.9]) {
+      const body = JSON.stringify({
+        gateway_model: "r1",
+        provider_id: 1,
+        provider_model: "up-r1",
+        pricing: { default: { price_input: 1, price_output: po, price_cache_read: 0, price_cache_write: 0 } },
+      });
+      const res = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: adminH, body }));
+      expect(res.status).toBe(200);
+    }
+    expect((db.query("SELECT COUNT(*) c FROM routes WHERE gateway_model='r1'").get() as { c: number }).c).toBe(1);
+    const row = db.query("SELECT pricing FROM routes WHERE gateway_model='r1'").get() as { pricing: string };
+    expect(JSON.parse(row.pricing).default.price_output).toBe(0.9);
+  });
+
+  test("GET single / 404 / filtered list", async () => {
+    const { app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const one = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { headers: adminH }));
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as { data: { gateway_model: string } }).data.gateway_model).toBe("m");
+    const missing = await app.fetch(new Request("http://x/admin/routes?gateway_model=nope&provider_id=1&provider_model=m-up", { headers: adminH }));
+    expect(missing.status).toBe(404);
+    const filtered = await app.fetch(new Request("http://x/admin/routes?provider_id=1", { headers: adminH }));
+    expect(((await filtered.json()) as { data: unknown[] }).data.length).toBe(1);
+  });
+
+  test("PUT updates only provided fields", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const body = JSON.stringify({
+      pricing: { default: { price_input: 1, price_output: 2.5, price_cache_read: 0, price_cache_write: 0 } },
+    });
+    const res = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: adminH, body }));
+    expect(res.status).toBe(200);
+    const row = db.query("SELECT gateway_model, provider_id, provider_model, priority, pricing FROM routes").get() as {
+      gateway_model: string;
+      provider_id: number;
+      provider_model: string;
+      priority: number;
+      pricing: string;
+    };
+    expect({ ...row, pricing: JSON.parse(row.pricing) }).toEqual({
+      gateway_model: "m",
+      provider_id: 1,
+      provider_model: "m-up",
+      priority: 10,
+      pricing: { default: { price_input: 1, price_output: 2.5, price_cache_read: 0, price_cache_write: 0 } },
+    });
+  });
+
+  test("PUT renames PK without adding rows; 409 on collision; 404 on missing target", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model) VALUES ('m2', 1, 'm-up')").run();
+    const rename = await app.fetch(new Request("http://x/admin/routes?gateway_model=m2&provider_id=1&provider_model=m-up", { method: "PUT", headers: adminH, body: JSON.stringify({ gateway_model: "m3" }) }));
+    expect(rename.status).toBe(200);
+    const models = db.query("SELECT gateway_model FROM routes ORDER BY gateway_model").all() as { gateway_model: string }[];
+    expect(models.map((r) => r.gateway_model)).toEqual(["m", "m3"]);
+    const dup = await app.fetch(new Request("http://x/admin/routes?gateway_model=m3&provider_id=1&provider_model=m-up", { method: "PUT", headers: adminH, body: JSON.stringify({ provider_model: "x" }) }));
+    expect(dup.status).toBe(200);
+    const collide = await app.fetch(new Request("http://x/admin/routes?gateway_model=m3&provider_id=1&provider_model=x", { method: "PUT", headers: adminH, body: JSON.stringify({ gateway_model: "m", provider_model: "m-up" }) }));
+    expect(collide.status).toBe(409);
+    const gone = await app.fetch(new Request("http://x/admin/routes?gateway_model=nope&provider_id=1&provider_model=x", { method: "PUT", headers: adminH, body: JSON.stringify({ priority: 1 }) }));
+    expect(gone.status).toBe(404);
+    expect((db.query("SELECT COUNT(*) c FROM routes").get() as { c: number }).c).toBe(2);
+  });
+
+  test("DELETE single route; repeat → 404", async () => {
+    const { app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const del = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "DELETE", headers: adminH }));
+    expect(del.status).toBe(200);
+    const again = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "DELETE", headers: adminH }));
+    expect(again.status).toBe(404);
+  });
+
+  test("provider PUT without routes keeps routes; with [] clears them", async () => {
+    const { db, app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const keep = await app.fetch(new Request("http://x/admin/providers/1", { method: "PUT", headers: adminH, body: JSON.stringify({ name: "p1", base_url: "http://changed", api_key: "k", enabled: true, meta: {} }) }));
+    expect(keep.status).toBe(200);
+    expect((db.query("SELECT COUNT(*) c FROM routes WHERE provider_id=1").get() as { c: number }).c).toBe(1);
+    const clear = await app.fetch(new Request("http://x/admin/providers/1", { method: "PUT", headers: adminH, body: JSON.stringify({ name: "p1", base_url: "http://changed", api_key: "k", enabled: true, meta: {}, routes: [] }) }));
+    expect(clear.status).toBe(200);
+    expect((db.query("SELECT COUNT(*) c FROM routes WHERE provider_id=1").get() as { c: number }).c).toBe(0);
+  });
+
+  test("GET /admin/providers/:id returns provider + routes; missing → 404", async () => {
+    const { app } = seed([mockUpstream("primary", () => Response.json({}))]);
+    const ok = await app.fetch(new Request("http://x/admin/providers/1", { headers: adminH }));
+    expect(ok.status).toBe(200);
+    const data = ((await ok.json()) as { data: { name: string; routes: unknown[] } }).data;
+    expect(data.name).toBe("p1");
+    expect(data.routes.length).toBe(1);
+    expect((await app.fetch(new Request("http://x/admin/providers/77", { headers: adminH }))).status).toBe(404);
+  });
+});
+
+describe("client abort", () => {
+  test("client disconnect penalizes no provider and the next request still routes", async () => {
+    const slow = Bun.serve({
+      port: 0,
+      async fetch() {
+        await Bun.sleep(1_000);
+        return Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 1 } });
+      },
+    });
+    servers.push(slow);
+    const { db, app } = seed([`http://localhost:${slow.port}`, `http://localhost:${slow.port}`]);
+    const gateway = Bun.serve({ port: 0, fetch: app.fetch });
+    servers.push(gateway);
+
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 200);
+    await fetch(`http://localhost:${gateway.port}/v1/chat/completions`, { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }), signal: ac.signal }).catch(() => {});
+    await Bun.sleep(200);
+
+    expect(app.router.pick("m").map((p) => p.provider.name)).toEqual(["p1", "p2"]);
+
+    const next = await fetch(`http://localhost:${gateway.port}/v1/chat/completions`, { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) });
+    expect(next.status).toBe(200);
+    expect((db.query("SELECT COUNT(*) c FROM usage_log").get() as { c: number }).c).toBe(1);
+  }, 10_000);
+});

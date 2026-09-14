@@ -1,0 +1,29 @@
+name: bunway-demo
+services:
+  gateway:
+    build: { context: .., dockerfile: Dockerfile }
+    ports: ["127.0.0.1:3101:3001"]
+    environment:
+      PORT: 3001
+      ADMIN_TOKEN: demo-admin-token
+      DB_PATH: /data/gateway.db
+    volumes: [data:/data]
+    depends_on: [mock-upstream]
+  mock-upstream:
+    image: oven/bun:1
+    working_dir: /app
+    command: bun run mock-upstream.ts
+    volumes: [.:/app]
+    ports: ["127.0.0.1:3102:3102"]
+  seed:
+    image: oven/bun:1
+    working_dir: /app
+    command: bun run seed.ts
+    restart: "no"
+    environment:
+      GATEWAY_URL: http://gateway:3001
+      ADMIN_TOKEN: demo-admin-token
+      DB_PATH: /data/gateway.db
+    volumes: [.:/app, data:/data]
+    depends_on: [gateway]
+volumes: { data: {} }
