@@ -83,10 +83,11 @@ Expected output: a checkout containing `Dockerfile`,
 ### 2. Configure the admin token
 
 ```bash
-printf 'GATEWAY_ADMIN_TOKEN=change-me-to-a-long-random-string\n' > .env
+printf 'GATEWAY_ADMIN_TOKEN=change-me-to-a-long-random-string\n' > deploy/.env
 ```
 
-Expected output: no output, exit code 0.
+Expected output: no output, exit code 0. Compose reads `.env` from the compose
+file's own directory (`deploy/`), not the repository root.
 
 ### 3. Start the gateway
 
