@@ -10,7 +10,7 @@
   let saveErr = $state(null);
 
   const PALETTE = ["var(--blue)", "var(--green)", "var(--amber)"];
-  const STATE_TEXT = { ok: "正常", cool: "冷却中", dead: "不可用", off: "已禁用" };
+  const STATE_TEXT = { ok: "OK", cool: "Cooling", dead: "Unavailable", off: "Disabled" };
 
   let now = $state(Date.now());
 
@@ -40,15 +40,15 @@
   const pricesOf = (c) => entryOf(c)?.now.prices ?? c.pricing?.default ?? {};
   const ruleOf = (c) => entryOf(c)?.now.rule ?? -1;
   const nextOf = (c) => entryOf(c)?.next_switch ?? null;
-  const tierLabel = (rule) => (rule < 0 ? "默认档" : `规则${"①②③④⑤"[rule] ?? rule + 1}`);
+  const tierLabel = (rule) => (rule < 0 ? "Default" : `Rule ${"①②③④⑤"[rule] ?? rule + 1}`);
   const tiersOf = (c) => [
     { rule: -1, prices: c.pricing?.default ?? {} },
     ...(c.pricing?.rules ?? []).map((r, i) => ({ rule: i, prices: { ...c.pricing.default, ...r } })),
   ];
   const tierMark = (c, rule) => {
-    if (rule === ruleOf(c)) return "当前";
+    if (rule === ruleOf(c)) return "current";
     const next = nextOf(c);
-    return next && next.rule === rule ? `${dayMark(next.ts, now)} ${localHM(next.ts)} 起` : "";
+    return next && next.rule === rule ? `from ${dayMark(next.ts, now)} ${localHM(next.ts)}` : "";
   };
   const tierWindow = (c, rule) => {
     const w = c.pricing.rules[rule];
@@ -100,7 +100,7 @@
     pending = {
       model: g.model,
       order,
-      label: `${g.model}：${moved.provider_name ?? moved.provider_id} 第 ${from + 1} 位 → 第 ${target + 1} 位`,
+      label: `${g.model}: ${moved.provider_name ?? moved.provider_id} #${from + 1} → #${target + 1}`,
     };
   }
 
@@ -126,7 +126,7 @@
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (e) {
-        saveErr = { model: g.model, msg: `${c.provider_name ?? c.provider_id} 优先级写入失败：${e.message}` };
+        saveErr = { model: g.model, msg: `${c.provider_name ?? c.provider_id} priority write failed: ${e.message}` };
         break;
       }
     }
@@ -156,7 +156,7 @@
     <span class="gm">
       {g.model}
       <small>
-        {g.cands.length} 候选{#if eff < 0}<span class="bad-cap"> · 全部不可用 → 502</span>{/if}
+        {g.cands.length} candidates{#if eff < 0}<span class="bad-cap"> · all unavailable → 502</span>{/if}
       </small>
     </span>
     <div class="chain" role="list">
@@ -189,43 +189,43 @@
           <span class="node-card">
             <b>{c.provider_name ?? p?.name ?? c.provider_id}</b>
             <small class="price" class:rule={rule >= 0}>{usd(price.price_input)}/{usd(price.price_output)}</small>
-            {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · 剩 {left(p)}s{/if}</span>{/if}
+            {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span>{/if}
             {#if i === eff && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
           </span>
           <div class="pop">
-            <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · 剩 {left(p)}s{/if}</span></div>
+            <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span></div>
             <div class="pu">{p?.base_url ?? "?"}</div>
             <table><tbody>
               <tr><td>provider_model</td><td>{c.provider_model}</td></tr>
-              <tr><td>priority / 顺序</td><td>{c.priority} / 第 {i + 1} 位</td></tr>
+              <tr><td>priority / order</td><td>{c.priority} / #{i + 1}</td></tr>
               {#each tiersOf(c) as t (t.rule)}
                 <tr class:cur={t.rule === ruleOf(c)}>
                   <td>{tierLabel(t.rule)}{#if tierMark(c, t.rule)}（{tierMark(c, t.rule)}）{/if}</td>
-                  <td>输入 {usd(t.prices.price_input, 3)} · 输出 {usd(t.prices.price_output, 3)}<br />
-                    <span class="note">缓存读 {usd(t.prices.price_cache_read, 3)} · 缓存写 {usd(t.prices.price_cache_write, 3)}</span></td>
+                  <td>in {usd(t.prices.price_input, 3)} · out {usd(t.prices.price_output, 3)}<br />
+                    <span class="note">cache rd {usd(t.prices.price_cache_read, 3)} · cache wr {usd(t.prices.price_cache_write, 3)}</span></td>
                 </tr>
                 {#if t.rule >= 0}<tr class="w"><td colspan="2" class="win">{tierWindow(c, t.rule)}</td></tr>{/if}
               {/each}
-              {#if fwd(p).length}<tr><td>转接头</td><td class="fw">{fwd(p).join(" · ")}</td></tr>{/if}
-              <tr><td>该 provider 承载路由</td><td>{routesOf(c.provider_id).length} 条</td></tr>
+              {#if fwd(p).length}<tr><td>forward headers</td><td class="fw">{fwd(p).join(" · ")}</td></tr>{/if}
+              <tr><td>routes on provider</td><td>{routesOf(c.provider_id).length}</td></tr>
             </tbody></table>
-            <div class="foot">单价 /1M tokens · 状态实时{#if tzOffset !== 0} · 窗口以 UTC 定义，显示按本地 {offsetLabel()}{/if}</div>
+            <div class="foot">unit price per 1M tokens · live status{#if tzOffset !== 0} · windows defined in UTC, shown in {offsetLabel()}{/if}</div>
           </div>
         </span>
       {/each}
       {#if g.cands.length === 1}
         <span class="conn"></span>
-        <span class="empty-slot">无备援</span>
+        <span class="empty-slot">no fallback</span>
       {/if}
-      {#if eff < 0}<span class="bad-cap" style="margin-left:10px">→ 全部不可用 · 502</span>{/if}
+      {#if eff < 0}<span class="bad-cap" style="margin-left:10px">→ all unavailable · 502</span>{/if}
     </div>
     {#if pending?.model === g.model}
       <div class="pending">
         <span>{pending.label}</span>
-        <button class="on" onclick={() => commit(g)}>确认写入</button>
-        <button onclick={cancel}>取消</button>
+        <button class="on" onclick={() => commit(g)}>Confirm</button>
+        <button onclick={cancel}>Cancel</button>
       </div>
     {/if}
-    {#if saveErr?.model === g.model}<div class="rt-err">{saveErr.msg}（已回显服务端真值）</div>{/if}
+    {#if saveErr?.model === g.model}<div class="rt-err">{saveErr.msg} (server values restored)</div>{/if}
   </div>
 {/each}
