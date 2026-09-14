@@ -11,14 +11,37 @@ flowchart LR
     C[Client / OpenAI SDK] -->|Bearer client key| G[bunway gateway :3001]
     G -->|priority order| P1[upstream A]
     G -->|on failure| P2[upstream B]
-    G -->|on failure| P3[upstream C]
     G <--> S[(SQLite /data/gateway.db)]
     G --> D[/console dashboard/]
+    A2[Admin / coding agents] -->|Bearer admin token| G
 ```
 
 One process serves everything: the OpenAI-compatible relay, the admin API,
 and the dashboard. All state (providers, routes, keys, usage, cost) lives in a
 single SQLite file.
+
+### Request lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant G as bunway gateway
+    participant A as upstream A (priority 10)
+    participant B as upstream B (priority 5)
+    participant DB as SQLite
+
+    C->>G: POST /v1/chat/completions (Bearer client key)
+    G->>G: authenticate key, pick providers by priority
+    G->>A: relay (api_key, extra/forwarded headers)
+    A-->>G: HTTP 502
+    G->>DB: mark A cooldown (default 1 min)
+    G->>B: relay same body
+    B-->>G: 200 SSE (chat.completion.chunk… + usage)
+    G->>DB: usage_log row (tokens, cost, latency, ttft)
+    G-->>C: SSE relayed, usage chunk forwarded
+    Note over G,B: next requests skip A until cooldown expires<br/>or a probe succeeds (test_interval_minutes)
+```
 
 ## Client API
 
@@ -90,15 +113,30 @@ host root without `/v1`**:
 ### Headers the upstream requires
 
 Some upstreams reject requests without specific headers (an account/session
-header, a browser-like `user-agent` behind Cloudflare). List them in the
-provider's `meta` and the gateway forwards matching client headers upstream:
+header, an API version pin, a browser-like `user-agent` behind Cloudflare).
+Two mechanisms, both configured in the provider's `meta`:
+
+- `extra_headers` — **static** values the gateway injects on every upstream
+  request. Use when the value is fixed per provider (an API version, an
+  account id).
+- `forward_headers` — named headers copied from the **incoming client
+  request**. Use when the value is per client or per session (a session id
+  each client generates). The client must send the header; if it does not,
+  nothing is forwarded.
+
+If both are configured for the same header, the client-supplied value wins.
 
 ```json
-{ "meta": { "forward_headers": ["x-opencode-session", "user-agent"] } }
+{ "meta": {
+    "extra_headers": { "x-api-version": "2026-06-01" },
+    "forward_headers": ["x-opencode-session"]
+} }
 ```
 
 `meta` is only settable through the admin API (`meta` field on provider
-create/update); there is no console editor for it yet.
+create/update); there is no console editor for it yet. Ready-to-use client
+configurations (OpenAI SDK, coding agents) that pair with these settings live
+in [agents.md](agents.md).
 
 ### Multiple providers for one model (failover)
 

@@ -21,5 +21,6 @@ trusted network; do not expose the admin port directly to the public internet.
 
 - [Deploy and verify](docs/deploy.md): step-by-step with expected output
 - [Gateway reference](docs/gateway.md): endpoints, base_url rule, provider config, failover, pricing
+- [Connecting agents and clients](docs/agents.md): ready-to-use configs (OpenAI SDK, Pi, Hermes)
 - [Chinese README](README.zh-CN.md): 中文说明
 - [Source overview](AGENTS.md): repository layout and dev commands

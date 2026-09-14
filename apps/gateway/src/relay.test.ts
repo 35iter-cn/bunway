@@ -131,6 +131,29 @@ describe("relay", () => {
     expect(received[0].headers.get("x-opencode-session")).toBeNull();
   });
 
+  test("extra_headers: static value injected when client sends none", async () => {
+    const base = mockUpstream(() => Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const { db, req } = setup(base);
+    db.query("UPDATE providers SET meta=? WHERE id=1").run(
+      JSON.stringify({ extra_headers: { "x-opencode-session": "static-sess" } })
+    );
+    req.provider = db.query<Provider, []>("SELECT * FROM providers").get()!;
+    req.clientHeaders = new Headers({ "authorization": "Bearer client" });
+    await relayAndBill(req, await relay(req));
+    expect(received[0].headers.get("x-opencode-session")).toBe("static-sess");
+  });
+
+  test("client header overrides extra_headers static value", async () => {
+    const base = mockUpstream(() => Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const { db, req } = setup(base);
+    db.query("UPDATE providers SET meta=? WHERE id=1").run(
+      JSON.stringify({ extra_headers: { "x-opencode-session": "static-sess" }, forward_headers: ["x-opencode-session"] })
+    );
+    req.provider = db.query<Provider, []>("SELECT * FROM providers").get()!;
+    await relayAndBill(req, await relay(req));
+    expect(received[0].headers.get("x-opencode-session")).toBe("sess-123");
+  });
+
   test("idle timeout: unresponsive upstream rejects before response", async () => {
     const base = mockUpstream(() => new Promise<Response>(() => {}));
     const { req } = setup(base);

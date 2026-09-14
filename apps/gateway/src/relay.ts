@@ -24,7 +24,13 @@ function buildHeaders(provider: Provider, clientHeaders: Headers): Headers {
   const h = new Headers();
   h.set("Authorization", `Bearer ${provider.api_key}`);
   h.set("Content-Type", "application/json");
-  const meta = JSON.parse(provider.meta || "{}") as { forward_headers?: string[] };
+  const meta = JSON.parse(provider.meta || "{}") as {
+    forward_headers?: string[];
+    extra_headers?: Record<string, string>;
+  };
+  for (const [name, value] of Object.entries(meta.extra_headers ?? {})) {
+    h.set(name, value);
+  }
   for (const name of meta.forward_headers ?? []) {
     const v = clientHeaders.get(name);
     if (v !== null) h.set(name, v);
