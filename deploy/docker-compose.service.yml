@@ -2,8 +2,8 @@ services:
   gateway:
     build:
       context: ..
-    image: llmgateway:latest
-    container_name: llmgateway
+    image: bunway:latest
+    container_name: bunway
     restart: unless-stopped
     ports:
       - "3001:3001"
