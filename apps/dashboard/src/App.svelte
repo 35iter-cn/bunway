@@ -7,7 +7,7 @@
   import { fmtTok } from "./lib/fmt.js";
 
   const RANGES = ["today", "7d", "30d"];
-  const RANGE_LABEL = { today: "今天", "7d": "7 天", "30d": "30 天" };
+  const RANGE_LABEL = { today: "Today", "7d": "7D", "30d": "30D" };
   const RANGE_DAYS = { today: 1, "7d": 7, "30d": 30 };
 
   let token = $state(localStorage.getItem("llmgw_token") ?? "");
@@ -114,9 +114,9 @@
     const totalReq = sum("requests");
     const tin = sum("prompt_tokens"), tout = sum("completion_tokens"), tcache = sum("cache_read_tokens");
     return [
-      { lbl: "累计成本", val: "$" + sum("cost").toFixed(2), sub: `峰值 <b>$${max("cost").toFixed(2)}</b> / 桶`, ac: "var(--amber)", spark: series.map((s) => s.cost ?? 0) },
-      { lbl: "请求数", val: totalReq, sub: `日均 <b>${Math.round(totalReq / RANGE_DAYS[range])}</b>`, ac: "var(--blue)", spark: series.map((s) => s.requests ?? 0) },
-      { lbl: "Tokens", val: fmtTok(tin + tout), sub: `输入 <b>${fmtTok(tin)}</b> / 输出 <b>${fmtTok(tout)}</b> / 缓存读 <b>${fmtTok(tcache)}</b>`, ac: "var(--blue)", spark: series.map((s) => s.tokens ?? 0) },
+      { lbl: "Total Cost", val: "$" + sum("cost").toFixed(2), sub: `peak <b>$${max("cost").toFixed(2)}</b> / bucket`, ac: "var(--amber)", spark: series.map((s) => s.cost ?? 0) },
+      { lbl: "Requests", val: totalReq, sub: `avg/day <b>${Math.round(totalReq / RANGE_DAYS[range])}</b>`, ac: "var(--blue)", spark: series.map((s) => s.requests ?? 0) },
+      { lbl: "Tokens", val: fmtTok(tin + tout), sub: `in <b>${fmtTok(tin)}</b> / out <b>${fmtTok(tout)}</b> / cache <b>${fmtTok(tcache)}</b>`, ac: "var(--blue)", spark: series.map((s) => s.tokens ?? 0) },
       { lbl: "TTFT p95", val: p95, sub: avg, ac: "var(--green)", spark: series.map((s) => s.ttft_avg ?? 0),
         foot: ttft.by_provider.map((p) => `${p.name} ${(p.p95 / 1000).toFixed(1)}s`).join(" · ") },
     ];
@@ -141,7 +141,7 @@
         <button class:on={range === r} onclick={() => setRange(r)}>{RANGE_LABEL[r]}</button>
       {/each}
     </div>
-    <button class="btn {spin ? 'spin' : ''}" onclick={refresh}><i>⟳</i> 刷新</button>
+    <button class="btn {spin ? 'spin' : ''}" onclick={refresh}><i>⟳</i> Refresh</button>
   </header>
 
   {#if err}<div class="err-banner">{err}</div>{/if}
@@ -150,37 +150,37 @@
     {#if kpis.length}<Kpi items={kpis} />{/if}
 
     <section class="panel full">
-      <h2><span class="dot"></span>成本 / 请求趋势</h2>
+      <h2><span class="dot"></span>Cost / Request Trend</h2>
       <div class="bd"><Timeseries {series} daily={range !== 'today'} {range} /></div>
     </section>
 
     {#if providers.length}
       <section class="panel full">
         <h2>
-          <span class="dot"></span>路由拓扑
-          <span class="cap">{providers.length} provider(正常 {provSummary.ok} · 冷却 {provSummary.cool} · 不可用 {provSummary.dead} · 禁用 {provSummary.off}) · {routes.length} route · 5xx 冷却 {cooldownMin}min/探测 {probeMin}min</span>
+          <span class="dot"></span>Route Topology
+          <span class="cap">{providers.length} providers (ok {provSummary.ok} · cooling {provSummary.cool} · unavailable {provSummary.dead} · disabled {provSummary.off}) · {routes.length} routes · 5xx cooldown {cooldownMin}min/probe {probeMin}min</span>
         </h2>
         <div class="bd"><Providers {providers} {routes} {pricing} {settings} {token} onreload={load} /></div>
       </section>
     {/if}
 
     <section class="panel full">
-      <h2><span class="dot"></span>模型 × Provider 明细</h2>
+      <h2><span class="dot"></span>Model × Provider Usage</h2>
       <div class="bd" style="padding:0"><UsageTable rows={stats} /></div>
     </section>
 
     <section class="panel full">
-      <h2><span class="dot"></span>错误事件
-        <span class="cap">{Object.keys(errors.counts).length} 事件类型 · {errors.recent.length} 条最近(JSONL 仅保留 7 天) · 左侧点击类型过滤</span>
+      <h2><span class="dot"></span>Error Events
+        <span class="cap">{Object.keys(errors.counts).length} event types · {errors.recent.length} recent (JSONL kept 7 days) · click a type to filter</span>
       </h2>
       <div class="bd"><Errors data={errors} /></div>
     </section>
 
-  {:else if !token}    <div class="err-banner">输入 admin token 后加载(header Bearer,与 /admin API 同一 token)</div>
+  {:else if !token}    <div class="err-banner">Enter admin token to load (Bearer header, same token as the /admin API)</div>
   {/if}
 
   <footer>
     <span>bunway · bun · sqlite</span>
-    <span>{lastLoad ? `上次刷新 ${new Date(lastLoad).toLocaleTimeString()} · 轮询 10s · range=${range}` : `轮询 10s · range=${range}`}</span>
+    <span>{lastLoad ? `Last refresh ${new Date(lastLoad).toLocaleTimeString()} · poll 10s · range=${range}` : `poll 10s · range=${range}`}</span>
   </footer>
 </div>

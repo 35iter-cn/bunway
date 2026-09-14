@@ -6,7 +6,7 @@ export const fmtTok = (v) => {
   return String(n);
 };
 
-export const DAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
+export const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
@@ -29,9 +29,9 @@ export const dayMark = (ts, ref = Date.now()) => {
   const days = Math.round(
     (new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(n.getFullYear(), n.getMonth(), n.getDate())) / 86_400_000
   );
-  if (days === 0) return "今天";
-  if (days === 1) return "明天";
-  return `周${DAY_NAMES[d.getDay()]}`;
+  if (days === 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  return DAY_NAMES[d.getDay()];
 };
 
 const toMins = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
@@ -50,12 +50,12 @@ export const localWindow = (w) => {
 
 export const windowLabel = (w) => {
   const l = localWindow(w);
-  return `${hm(l.from)}–${hm(l.to)}${l.crosses ? "（次日）" : ""}`;
+  return `${hm(l.from)}–${hm(l.to)}${l.crosses ? " (next day)" : ""}`;
 };
 
 export const dayList = (days, shift = 0) => {
   if (!days || days.length === 7) return "";
   const ds = [...new Set(days.map((d) => (d + shift + 7) % 7))].sort((a, b) => a - b);
   const run = ds.length >= 3 && ds.every((d, i) => i === 0 || d === ds[i - 1] + 1);
-  return run ? `周${DAY_NAMES[ds[0]]}–${DAY_NAMES[ds[ds.length - 1]]} ` : `周${ds.map((d) => DAY_NAMES[d]).join("/")} `;
+  return run ? `${DAY_NAMES[ds[0]]}–${DAY_NAMES[ds[ds.length - 1]]} ` : `${ds.map((d) => DAY_NAMES[d]).join("/")} `;
 };
