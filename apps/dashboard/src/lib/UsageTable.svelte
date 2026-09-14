@@ -2,13 +2,13 @@
   import { fmtTok } from "./fmt.js";
   let { rows = [] } = $props();
   const COLS = [
-    { key: "gateway_model", label: "模型", num: false },
+    { key: "gateway_model", label: "Model", num: false },
     { key: "provider", label: "provider", num: false },
-    { key: "provider_model", label: "映射模型", num: false },
-    { key: "cost", label: "成本", num: true },
-    { key: "costShare", label: "占比", num: true },
+    { key: "provider_model", label: "Upstream Model", num: false },
+    { key: "cost", label: "Cost", num: true },
+    { key: "costShare", label: "Share", num: true },
     { key: "tokens", label: "tokens(in/out)", num: true },
-    { key: "requests", label: "请求", num: true },
+    { key: "requests", label: "Reqs", num: true },
     { key: "ttft_p95_s", label: "TTFT p95", num: true },
   ];
   let sortKey = $state("cost");
@@ -60,6 +60,6 @@
         <td class="p95col">{secs(r.ttft_p95_s)}</td>
       </tr>
     {/each}
-    {#if !sorted.length}<tr><td colspan="8" class="empty">范围内无数据</td></tr>{/if}
+    {#if !sorted.length}<tr><td colspan="8" class="empty">No data in range</td></tr>{/if}
   </tbody>
 </table>

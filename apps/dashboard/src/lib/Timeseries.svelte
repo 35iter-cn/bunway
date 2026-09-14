@@ -68,8 +68,8 @@
       ],
       series: [
         { value: (u, v) => (v == null ? "--" : fullLabel(v)) },
-        { label: "成本$", stroke: "#f2a83b", scale: "cost", width: 1.5, points: { show: showPoints, size: 3 }, value: (u, v) => "$" + (v ?? 0).toFixed(4) },
-        { label: "请求数", stroke: "#5b9bd5", scale: "req", width: 1.5, points: { show: showPoints, size: 3 } },
+        { label: "Cost", stroke: "#f2a83b", scale: "cost", width: 1.5, points: { show: showPoints, size: 3 }, value: (u, v) => "$" + (v ?? 0).toFixed(4) },
+        { label: "Requests", stroke: "#5b9bd5", scale: "req", width: 1.5, points: { show: showPoints, size: 3 } },
       ],
     };
     plot?.destroy();
@@ -81,8 +81,8 @@
 </script>
 
 <div class="legend">
-  <span><i style="background:var(--amber)"></i>成本 $</span>
-  <span><i style="background:var(--blue)"></i>请求数</span>
+  <span><i style="background:var(--amber)"></i>Cost $</span>
+  <span><i style="background:var(--blue)"></i>Requests</span>
 </div>
 <div bind:this={el}></div>
-{#if !series.length}<div class="empty">范围内无数据</div>{/if}
+{#if !series.length}<div class="empty">No data in range</div>{/if}

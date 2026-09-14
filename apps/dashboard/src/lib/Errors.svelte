@@ -31,14 +31,14 @@
 <div class="errs">
   <div class="ecount">
     <div class="erow" class:sel={filter === "all"} style="--evc:var(--faint)" onclick={() => pick("all")}>
-      <i></i><span>全部</span><b>{total}</b>
+      <i></i><span>All</span><b>{total}</b>
     </div>
     {#each sorted as [e, c] (e)}
       <div class="erow" class:sel={filter === e} style="--evc:{color(e)}" onclick={() => pick(e)}>
         <i></i><span>{e}</span><i class="bar" style="width:{Math.max(3, (c / (max || 1)) * 54).toFixed(0)}px"></i><b>{c}</b>
       </div>
     {:else}
-      <div class="erow" style="--evc:var(--faint)"><i></i><span>无事件</span></div>
+      <div class="erow" style="--evc:var(--faint)"><i></i><span>No events</span></div>
     {/each}
   </div>
   <div class="stream">
@@ -56,7 +56,7 @@
         {/if}
       </div>
     {:else}
-      <div class="empty">无事件</div>
+      <div class="empty">No events</div>
     {/each}
   </div>
 </div>
