@@ -34,6 +34,7 @@ curl -sN http://127.0.0.1:3101/v1/chat/completions \
 ## Docs
 
 - Deploy & verify (step by step, with expected output): [docs/deploy.md](docs/deploy.md)
+- Gateway reference (endpoints, provider config, failover, pricing): [docs/gateway.md](docs/gateway.md)
 - Using a coding agent? Point it at [llms.txt](llms.txt)
 - 中文文档: [README.zh-CN.md](README.zh-CN.md)
 

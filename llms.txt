@@ -20,5 +20,6 @@ trusted network; do not expose the admin port directly to the public internet.
 ## Docs
 
 - [Deploy and verify](docs/deploy.md): step-by-step with expected output
+- [Gateway reference](docs/gateway.md): endpoints, base_url rule, provider config, failover, pricing
 - [Chinese README](README.zh-CN.md): 中文说明
 - [Source overview](AGENTS.md): repository layout and dev commands

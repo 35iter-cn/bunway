@@ -155,3 +155,9 @@ the second streams chat completions. The console
   admin token is entered in-page and used for data calls). This is intentional,
   not a vulnerability.
 - See [SECURITY.md](../SECURITY.md) for disclosure contact.
+
+## Next: connect your real providers
+
+With the gateway running, add your own upstream providers, routes, and
+failover chains — endpoint list, the `base_url` rule, header forwarding, and
+pricing are documented in [gateway.md](gateway.md).

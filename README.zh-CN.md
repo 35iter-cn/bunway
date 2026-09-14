@@ -34,6 +34,7 @@ curl -sN http://127.0.0.1:3101/v1/chat/completions \
 ## 文档
 
 - 部署与验证（逐步，含预期输出）：[docs/deploy.md](docs/deploy.md)
+- 网关参考（接口清单、provider 配置、故障转移、计价）：[docs/gateway.md](docs/gateway.md)
 - 英文主文档: [README.md](README.md)
 
 ## 许可
