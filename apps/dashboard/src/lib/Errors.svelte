@@ -42,7 +42,7 @@
     {/each}
   </div>
   <div class="stream">
-    {#each shown as ev (ev.ts + ev.event)}
+    {#each shown as ev, i (ev.ts + ev.event + i)}
       <div
         class="ev"
         style="--evc:{color(ev.event)}"
