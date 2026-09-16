@@ -158,11 +158,24 @@ describe("GET /admin/pricing", () => {
       body.data.find((r) => r.provider_id === provider_id)!;
 
     const off = await (await app.fetch(new Request("http://x/admin/pricing", { headers: AH }))).json();
-    expect(off.dynamic_priority).toBe(false);
+    expect(off.dynamic_priority).toBe(true);
     expect(typeof off.computed_at).toBe("number");
-    expect(rankOf(off, 1).rank).toBe(1);
-    expect(rankOf(off, 2).rank).toBe(2);
+    expect(rankOf(off, 2).rank).toBe(1);
+    expect(rankOf(off, 1).rank).toBe(2);
     expect(rankOf(off, 2).price_index).toBeCloseTo(0.15 + 0.6 + 0.003, 10);
+
+    const offPut = await app.fetch(
+      new Request("http://x/admin/settings", {
+        method: "PUT",
+        headers: { ...AH, "Content-Type": "application/json" },
+        body: JSON.stringify({ dynamic_priority: "0" }),
+      })
+    );
+    expect(offPut.status).toBe(200);
+    const plain = await (await app.fetch(new Request("http://x/admin/pricing", { headers: AH }))).json();
+    expect(plain.dynamic_priority).toBe(false);
+    expect(rankOf(plain, 1).rank).toBe(1);
+    expect(rankOf(plain, 2).rank).toBe(2);
 
     const put = await app.fetch(
       new Request("http://x/admin/settings", {
@@ -178,8 +191,7 @@ describe("GET /admin/pricing", () => {
     expect(rankOf(on, 2).rank).toBe(1);
     expect(rankOf(on, 1).rank).toBe(2);
     expect(rankOf(on, 1).price_index).toBeCloseTo(0.3 + 1.2 + 0.006, 10);
-  });
-});
+  });});
 
 describe("GET /admin/stats/timeseries", () => {
   test("empty db → zero-filled continuous buckets", async () => {

@@ -16,6 +16,7 @@ function setup(): { db: Database; router: Router } {  const db = openDb(":memory
   insRoute.run("glm", 1, "glm", 10);
   insRoute.run("glm", 2, "glm", 5);
   insRoute.run("glm", 3, "glm", 1);
+  db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
   let cooldown = 5;
   const router = new Router(db, () => cooldown);
   return { db, router };
@@ -28,6 +29,7 @@ const pricingJson = (input: number, output: number, cacheRead: number): string =
 
 function priceSetup(dynamic: boolean): { db: Database; router: Router } {
   const db = openDb(":memory:");
+  db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'primary','http://p','k')").run();
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'backup','http://b','k')").run();
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (3,'last','http://l','k')").run();
@@ -40,7 +42,6 @@ function priceSetup(dynamic: boolean): { db: Database; router: Router } {
   if (dynamic) db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
   return { db, router: new Router(db, () => 5) };
 }
-
 const names = (list: ProviderRuntime[]): string[] => list.map((p) => p.provider.name);
 
 async function waitLines(lines: () => string[], n: number): Promise<string[]> {
