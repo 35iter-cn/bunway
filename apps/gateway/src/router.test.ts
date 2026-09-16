@@ -239,6 +239,13 @@ describe("Router dynamic order log", () => {
       expect((await waitLines(lines, 1)).length).toBe(1);
 
       db.query("UPDATE routes SET pricing=? WHERE provider_id=1").run(pricingJson(0.15, 0.6, 0.003));
+      db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
+      router.invalidate();
+      router.pick("m");
+      await Bun.sleep(120);
+      expect(lines().length).toBe(1);
+
+      db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
       router.invalidate();
       router.pick("m");
       const after = await waitLines(lines, 2);

@@ -4,3 +4,5 @@
 {"ts":"2026-09-16T04:01:28.175Z","level":"error","event":"pricing_invalid","route":"glm@3/glm"}
 {"ts":"2026-09-16T04:01:57.217Z","level":"error","event":"pricing_invalid","route":"glm@1/glm"}
 {"ts":"2026-09-16T04:01:57.218Z","level":"error","event":"pricing_invalid","route":"glm@3/glm"}
+{"ts":"2026-09-16T04:15:33.154Z","level":"error","event":"pricing_invalid","route":"glm@1/glm"}
+{"ts":"2026-09-16T04:15:33.155Z","level":"error","event":"pricing_invalid","route":"glm@3/glm"}

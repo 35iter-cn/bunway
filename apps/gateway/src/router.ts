@@ -30,6 +30,7 @@ export class Router {
   private cooldownSettings: () => number;
   private orderTs = 0;
   private ranks = new Map<string, number[]>();
+  private lastOrder = new Map<string, number[]>();
   private dynamic = false;
 
   constructor(db: Database, cooldownMinutes: () => number) {
@@ -94,7 +95,6 @@ export class Router {
   }
 
   private recompute(now: number): void {
-    const prev = this.ranks;
     this.ranks = new Map();
     this.orderTs = now;
     this.dynamic = this.dynamicOn();
@@ -106,7 +106,7 @@ export class Router {
       });
       keyed.sort((a, b) => a.idx - b.idx || b.pri - a.pri);
       const ids = keyed.map((k) => k.id);
-      const from = prev.get(model) ?? null;
+      const from = this.lastOrder.get(model) ?? null;
       if (from?.join() !== ids.join()) {
         void logError({
           level: "info",
@@ -119,6 +119,7 @@ export class Router {
         });
       }
       this.ranks.set(model, ids);
+      this.lastOrder.set(model, ids);
     }
   }
 
