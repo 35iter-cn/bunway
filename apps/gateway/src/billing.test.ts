@@ -10,6 +10,7 @@ import {
   resolvePrices,
   tierOf,
   nextSwitch,
+  priceIndex,
 } from "./billing";
 import type { Pricing, PricedRoute } from "./billing";
 
@@ -179,6 +180,22 @@ describe("matchRule / resolvePrices", () => {
       price_cache_read: 3,
       price_cache_write: 4,
     });
+  });
+});
+
+describe("priceIndex", () => {
+  test("input + output + cache read at the resolved tier", () => {
+    const ts = at("2026-09-14T12:00:00Z");
+    const peakRoute: PricedRoute = { ...route, pricing: PEAK };
+    expect(priceIndex(route, ts)).toBeCloseTo(1 + 2 + 0.1, 10);
+    expect(priceIndex(peakRoute, at("2026-09-14T02:00:00Z"))).toBeCloseTo(0.3 + 1.2 + 0.006, 10);
+    expect(priceIndex(peakRoute, at("2026-09-14T05:00:00Z"))).toBeCloseTo(0.15 + 0.6 + 0.003, 10);
+    expect(priceIndex(peakRoute, at("2026-09-13T02:00:00Z"))).toBeCloseTo(0.15 + 0.6 + 0.003, 10);
+  });
+
+  test("cache write is never counted", () => {
+    const withWrite: PricedRoute = { ...route, pricing: { default: { ...pricing.default, price_cache_write: 9 } } };
+    expect(priceIndex(withWrite, at("2026-09-14T12:00:00Z"))).toBeCloseTo(3.1, 10);
   });
 });
 

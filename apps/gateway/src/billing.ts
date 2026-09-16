@@ -80,6 +80,11 @@ export function resolvePrices(pricing: Pricing, ts: number): Prices {
   return { ...pricing.default, ...(matchRule(pricing.rules ?? [], ts) ?? {}) };
 }
 
+export function priceIndex(route: PricedRoute, ts: number): number {
+  const p = resolvePrices(route.pricing, ts);
+  return p.price_input + p.price_output + p.price_cache_read;
+}
+
 export function tierOf(pricing: Pricing, ts: number): number {
   const rules = pricing.rules ?? [];
   const hit = matchRule(rules, ts);
