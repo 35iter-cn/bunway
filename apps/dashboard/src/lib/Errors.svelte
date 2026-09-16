@@ -20,7 +20,7 @@
   const sorted = $derived(Object.entries(data.counts).sort((a, b) => b[1] - a[1]));
   const total = $derived(sorted.reduce((a, [, c]) => a + c, 0));
   const max = $derived(sorted.length ? Math.max(...sorted.map(([, c]) => c)) : 0);
-  const shown = $derived(filter === "all" ? data.recent : data.recent.filter((e) => e.event === filter));
+  const shown = $derived(filter === "all" ? data.recent : (data.byEvent?.[filter] ?? []));
 
   function pick(e) {
     filter = filter === e ? "all" : e;

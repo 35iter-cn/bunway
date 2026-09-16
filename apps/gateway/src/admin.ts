@@ -352,6 +352,7 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     const dir = process.env.LOG_DIR ?? "/data/logs";
     const counts: Record<string, number> = {};
     const recent: Array<Record<string, unknown>> = [];
+    const byEvent: Record<string, Array<Record<string, unknown>>> = {};
     const firstDay = new Date(win.since).toISOString().slice(0, 10);
     const lastDay = new Date(win.until).toISOString().slice(0, 10);
     for (let day = firstDay; day <= lastDay; day = nextDay(day)) {
@@ -366,11 +367,16 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
           const event = String(entry.event ?? "unknown");
           counts[event] = (counts[event] ?? 0) + 1;
           recent.push(entry);
+          (byEvent[event] ??= []).push(entry);
         } catch {}
       }
     }
     recent.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
-    return { counts, recent: recent.slice(0, limit) };
+    for (const entries of Object.values(byEvent)) {
+      entries.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+      entries.splice(limit);
+    }
+    return { counts, recent: recent.slice(0, limit), byEvent };
   }
 
   function nextDay(day: string): string {

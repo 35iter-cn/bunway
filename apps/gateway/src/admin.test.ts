@@ -283,6 +283,9 @@ describe("GET /admin/errors", () => {
     expect(data.counts).toEqual({ upstream_error: 2, client_aborted: 1 });
     expect(data.recent.length).toBe(3);
     expect(data.recent[0].event).toBe("upstream_error");
+    expect(Object.keys(data.byEvent).sort()).toEqual(["client_aborted", "upstream_error"]);
+    expect(data.byEvent.upstream_error.map((e: { ts: string }) => e.ts)).toEqual([`${day}T07:12:00Z`, `${day}T07:10:37Z`]);
+    expect(data.byEvent.client_aborted).toEqual([{ ts: `${day}T07:11:00Z`, event: "client_aborted", provider: "p1", phase: "upstream_call" }]);
   });
 
   test("missing log dir → empty, no throw", async () => {
@@ -290,7 +293,7 @@ describe("GET /admin/errors", () => {
     process.env.LOG_DIR = join("/tmp", `gw-nonexistent-${Date.now()}`);
     const res = await app.fetch(new Request("http://x/admin/errors?range=today", { headers: AH }));
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual({ counts: {}, recent: [] });
+    expect((await res.json()).data).toEqual({ counts: {}, recent: [], byEvent: {} });
   });
 
   test("limit clamped", async () => {
@@ -303,6 +306,7 @@ describe("GET /admin/errors", () => {
     const res = await app.fetch(new Request("http://x/admin/errors?range=today&limit=3", { headers: AH }));
     const { data } = await res.json();
     expect(data.recent.length).toBe(3);
+    expect(data.byEvent.e.length).toBe(3);
 
     const res2 = await app.fetch(new Request("http://x/admin/errors?range=today&limit=99999", { headers: AH }));
     expect((await res2.json()).data.recent.length).toBe(10);
