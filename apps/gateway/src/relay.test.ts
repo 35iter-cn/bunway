@@ -105,6 +105,45 @@ describe("relay", () => {
     expect(row.prompt_tokens).toBe(50);
   });
 
+  test("stream: reasoning delta normalized to reasoning_content, other chunks untouched", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {"id":"1","choices":[{"delta":{"reasoning":"th"},"index":0}]}\n\n` +
+            `data: {"id":"1","choices":[{"delta":{"reasoning_content":"th2"},"index":0}]}\n\n` +
+            `data: {"id":"1","choices":[{"delta":{"content":"hi"},"index":0}]}\n\n` +
+            `data: [DONE]\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+
+    expect(text).toContain('"reasoning_content":"th"');
+    expect(text).toContain('"reasoning_content":"th2"');
+    expect(text).not.toContain('"reasoning":');
+    expect(text).toContain('"content":"hi"');
+    expect(text).toContain("[DONE]");
+  });
+
+  test("non-stream: message reasoning normalized to reasoning_content", async () => {
+    const base = mockUpstream(() =>
+      Response.json({
+        id: "1",
+        choices: [{ message: { role: "assistant", reasoning: "th", content: "ok" } }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      })
+    );
+    const { db, req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const json = JSON.parse(await out.text()) as { choices: { message: Record<string, unknown> }[] };
+
+    expect(json.choices[0].message).toEqual({ role: "assistant", content: "ok", reasoning_content: "th" });
+    const row = db.query("SELECT * FROM usage_log").get() as Record<string, unknown>;
+    expect(row.prompt_tokens).toBe(5);
+  });
+
   test("stream with usage-bearing choice chunk: billed once, chunk forwarded", async () => {
     const base = mockUpstream(
       () =>

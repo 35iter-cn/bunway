@@ -11,12 +11,12 @@ afterEach(() => {
   hits.length = 0;
 });
 
-function mockUpstream(name: string, handler: () => Response): string {
+function mockUpstream(name: string, handler: (req: Request) => Response | Promise<Response>): string {
   const server = Bun.serve({
     port: 0,
-    fetch: () => {
+    fetch: (req) => {
       hits.push(name);
-      return handler();
+      return handler(req);
     },
   });
   servers.push(server);
@@ -67,6 +67,48 @@ describe("/v1 failover orchestration", () => {
     const res = await app.fetch(new Request("http://x/v1/models", { headers: H }));
     const json = await res.json();
     expect(json.data.map((m: { id: string }) => m.id)).toEqual(["m"]);
+  });
+});
+
+describe("request reasoning normalization", () => {
+  const messages = [
+    { role: "user", content: "hi" },
+    { role: "assistant", reasoning: "th", tool_calls: [] },
+    { role: "tool", tool_call_id: "c", content: "ok" },
+    { role: "assistant", tool_calls: [] },
+  ];
+
+  async function forwarded(meta: Record<string, unknown>): Promise<Record<string, unknown>> {
+    let sent = "";
+    const { db, app } = seed([
+      mockUpstream("primary", async (req) => {
+        sent = await req.text();
+        return Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+      }),
+    ]);
+    db.query("UPDATE providers SET meta=? WHERE id=1").run(JSON.stringify(meta));
+    app.router.invalidate();
+    const res = await app.fetch(
+      new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages }) })
+    );
+    expect(res.status).toBe(200);
+    return JSON.parse(sent) as Record<string, unknown>;
+  }
+
+  test("renames the legacy reasoning field for every provider", async () => {
+    const sent = await forwarded({});
+    const msgs = sent.messages as Record<string, unknown>[];
+    expect(sent.model).toBe("m-up");
+    expect(msgs[0]).toEqual({ role: "user", content: "hi" });
+    expect(msgs[1]).toEqual({ role: "assistant", tool_calls: [], reasoning_content: "th" });
+    expect(msgs[3]).toEqual({ role: "assistant", tool_calls: [] });
+  });
+
+  test("pads empty reasoning_content only when the provider requires the key", async () => {
+    const sent = await forwarded({ requires_reasoning_content: true });
+    const msgs = sent.messages as Record<string, unknown>[];
+    expect(msgs[1]).toEqual({ role: "assistant", tool_calls: [], reasoning_content: "th" });
+    expect(msgs[3]).toEqual({ role: "assistant", tool_calls: [], reasoning_content: "" });
   });
 });
 
