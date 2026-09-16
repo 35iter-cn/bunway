@@ -151,8 +151,8 @@ describe("GET /admin/pricing", () => {
     const ins = db.query(
       "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES (?,?,?,?,?)"
     );
-    ins.run("m", 1, "m-up", 10, JSON.stringify(PEAK));
-    ins.run("m", 2, "m-up", 5, JSON.stringify({ default: { ...PEAK.default, price_input: 0.15 } }));
+    ins.run("m", 1, "m-up", 10, JSON.stringify({ default: { price_input: 0.3, price_output: 1.2, price_cache_read: 0.006, price_cache_write: 0 } }));
+    ins.run("m", 2, "m-up", 5, JSON.stringify({ default: { price_input: 0.15, price_output: 0.6, price_cache_read: 0.003, price_cache_write: 0 } }));
     const app = createApp(db, "admin-token");
     const rankOf = (body: { data: Array<{ provider_id: number; rank: number; price_index: number }> }, provider_id: number) =>
       body.data.find((r) => r.provider_id === provider_id)!;
