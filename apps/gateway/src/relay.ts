@@ -1,4 +1,5 @@
 import type { Provider } from "./db";
+import { normalizeResponseBody, normalizeResponseChunk } from "./reasoning";
 import { normalizeUsage, computeCost, recordUsage } from "./billing";
 import type { NormalizedUsage } from "./billing";
 import { logError } from "./tester";
@@ -20,14 +21,21 @@ export type RelayRequest = {
 
 const UPSTREAM_IDLE_TIMEOUT_MS = 60_000;
 
+export type ProviderMeta = {
+  forward_headers?: string[];
+  extra_headers?: Record<string, string>;
+  requires_reasoning_content?: boolean;
+};
+
+export function providerMeta(provider: Provider): ProviderMeta {
+  return JSON.parse(provider.meta || "{}") as ProviderMeta;
+}
+
 function buildHeaders(provider: Provider, clientHeaders: Headers): Headers {
   const h = new Headers();
   h.set("Authorization", `Bearer ${provider.api_key}`);
   h.set("Content-Type", "application/json");
-  const meta = JSON.parse(provider.meta || "{}") as {
-    forward_headers?: string[];
-    extra_headers?: Record<string, string>;
-  };
+  const meta = providerMeta(provider);
   for (const [name, value] of Object.entries(meta.extra_headers ?? {})) {
     h.set(name, value);
   }
@@ -77,7 +85,7 @@ export async function relayAndBill(req: RelayRequest, upstream: Response): Promi
   const idleMs = req.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
   const isStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
   if (!isStream) {
-    const text = await readBodyText(req, upstream.body!.getReader(), idleMs);
+    const text = normalizeResponseBody(await readBodyText(req, upstream.body!.getReader(), idleMs));
     billFromJson(req, text);
     return new Response(text, {
       status: upstream.status,
@@ -195,7 +203,7 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
               bill(req, obj.usage);
               captured = true;
             }
-            outLines.push(line);
+            outLines.push(normalizeResponseChunk(obj) ? `data: ${JSON.stringify(obj)}` : line);
           }
           if (outLines.length > 0) controller.enqueue(encoder.encode(outLines.join("\n") + "\n"));
         }
