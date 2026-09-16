@@ -173,7 +173,7 @@
     </section>
 
     <section class="panel full">
-      <h2><span class="dot"></span>Error Events
+      <h2><span class="dot"></span>Events
         <span class="cap">{Object.keys(errors.counts).length} event types · {errors.recent.length} recent (JSONL kept 7 days) · click a type to filter</span>
       </h2>
       <div class="bd"><Errors data={errors} /></div>
