@@ -5,3 +5,4 @@ logs/
 .env
 node_modules/
 apps/dashboard/dist/
+apps/gateway/undefined/

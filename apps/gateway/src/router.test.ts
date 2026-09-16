@@ -265,7 +265,8 @@ describe("Router dynamic order log", () => {
       const first = JSON.parse(after[0]) as Record<string, unknown>;
       expect(first.from).toBeNull();
     } finally {
-      process.env.LOG_DIR = prevDir;
+      if (prevDir === undefined) delete process.env.LOG_DIR;
+      else process.env.LOG_DIR = prevDir;
     }
   });
 });
