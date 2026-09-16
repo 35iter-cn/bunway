@@ -222,7 +222,7 @@ describe("Router dynamic price order", () => {
 });
 
 describe("Router dynamic order log", () => {
-  test("logs routing_order_changed only when the order changes", async () => {
+  test("logs routing_order_changed only on a real change, never for the first baseline", async () => {
     const dir = mkdtempSync(`${tmpdir()}/bunway-order-log-`);
     const prevDir = process.env.LOG_DIR;
     process.env.LOG_DIR = dir;
@@ -237,21 +237,22 @@ describe("Router dynamic order log", () => {
           : [];
 
       router.pick("m");
-      expect((await waitLines(lines, 1)).length).toBe(1);
+      await Bun.sleep(120);
+      expect(lines().length).toBe(0);
 
       db.query("UPDATE routes SET pricing=? WHERE provider_id=1").run(pricingJson(0.15, 0.6, 0.003));
       db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
       router.invalidate();
       router.pick("m");
       await Bun.sleep(120);
-      expect(lines().length).toBe(1);
+      expect(lines().length).toBe(0);
 
       db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
       router.invalidate();
       router.pick("m");
-      const after = await waitLines(lines, 2);
-      expect(after.length).toBe(2);
-      const entry = JSON.parse(after[1]) as Record<string, unknown>;
+      const after = await waitLines(lines, 1);
+      expect(after.length).toBe(1);
+      const entry = JSON.parse(after[0]) as Record<string, unknown>;
       expect(entry.level).toBe("info");
       expect(entry.event).toBe("routing_order_changed");
       expect(entry.from).toEqual([2, 3, 1]);
@@ -260,10 +261,7 @@ describe("Router dynamic order log", () => {
       router.invalidate();
       router.pick("m");
       await Bun.sleep(120);
-      expect(lines().length).toBe(2);
-
-      const first = JSON.parse(after[0]) as Record<string, unknown>;
-      expect(first.from).toBeNull();
+      expect(lines().length).toBe(1);
     } finally {
       if (prevDir === undefined) delete process.env.LOG_DIR;
       else process.env.LOG_DIR = prevDir;

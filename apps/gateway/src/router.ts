@@ -107,7 +107,7 @@ export class Router {
       keyed.sort((a, b) => a.idx - b.idx || b.pri - a.pri);
       const ids = keyed.map((k) => k.id);
       const from = this.lastOrder.get(model) ?? null;
-      if (from?.join() !== ids.join()) {
+      if (from !== null && from.join() !== ids.join()) {
         void logError({
           level: "info",
           event: "routing_order_changed",
