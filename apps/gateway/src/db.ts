@@ -47,6 +47,7 @@ export const ZERO_PRICING =
 export const DEFAULT_SETTINGS: Record<string, string> = {
   test_interval_minutes: "60",
   cooldown_minutes_5xx: "1",
+  dynamic_priority: "0",
 };
 
 export function openDb(path: string): Database {

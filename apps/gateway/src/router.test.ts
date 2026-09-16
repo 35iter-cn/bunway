@@ -1,10 +1,10 @@
 import { describe, test, expect } from "bun:test";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
+import type { ProviderRuntime } from "./router";
 import type { Database } from "bun:sqlite";
 
-function setup(): { db: Database; router: Router } {
-  const db = openDb(":memory:");
+function setup(): { db: Database; router: Router } {  const db = openDb(":memory:");
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'primary','http://p','k')").run();
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'backup','http://b','k')").run();
   db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (3,'last','http://l','k')").run();
@@ -18,6 +18,28 @@ function setup(): { db: Database; router: Router } {
   const router = new Router(db, () => cooldown);
   return { db, router };
 }
+
+const pricingJson = (input: number, output: number, cacheRead: number): string =>
+  JSON.stringify({
+    default: { price_input: input, price_output: output, price_cache_read: cacheRead, price_cache_write: 0 },
+  });
+
+function priceSetup(dynamic: boolean): { db: Database; router: Router } {
+  const db = openDb(":memory:");
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'primary','http://p','k')").run();
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'backup','http://b','k')").run();
+  db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (3,'last','http://l','k')").run();
+  const insRoute = db.query(
+    "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES (?,?,?,?,?)"
+  );
+  insRoute.run("m", 1, "m", 10, pricingJson(0.3, 1.2, 0.006));
+  insRoute.run("m", 2, "m", 5, pricingJson(0.15, 0.6, 0.003));
+  insRoute.run("m", 3, "m", 1, pricingJson(0.15, 0.6, 0.003));
+  if (dynamic) db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
+  return { db, router: new Router(db, () => 5) };
+}
+
+const names = (list: ProviderRuntime[]): string[] => list.map((p) => p.provider.name);
 
 describe("classifyError", () => {
   test("4xx matrix per spec", () => {
@@ -120,6 +142,71 @@ describe("Router.states", () => {
     expect(router.states()[1].cooldown_until).toBeGreaterThan(Date.now());
     router.markResult(primary, "unavailable");
     expect(router.states()[1]).toEqual({ unavailable: true, cooldown_until: 0 });
+  });
+});
+
+describe("Router dynamic price order", () => {
+  test("off: priority descending even when a cheaper provider exists", () => {
+    const { router } = priceSetup(false);
+    expect(names(router.pick("m"))).toEqual(["primary", "backup", "last"]);
+    expect(router.orderBasis().dynamic).toBe(false);
+    expect(router.orderBasis().rankOf("m", 2)).toBe(2);
+  });
+
+  test("on: ascending price index, equal index falls back to priority", () => {
+    const { router } = priceSetup(true);
+    expect(names(router.pick("m"))).toEqual(["backup", "last", "primary"]);
+    const basis = router.orderBasis();
+    expect(basis.dynamic).toBe(true);
+    expect(basis.ts).toBeGreaterThan(0);
+    expect(basis.rankOf("m", 2)).toBe(1);
+    expect(basis.rankOf("m", 1)).toBe(3);
+  });
+
+  test("on: unavailable and cooldown filtered before ranking", () => {
+    const { router } = priceSetup(true);
+    const [backup] = router.pick("m");
+    router.markResult(backup, "unavailable");
+    expect(names(router.pick("m"))).toEqual(["last", "primary"]);
+  });
+
+  test("on: routeFor keeps the provider's highest-priority route", () => {
+    const { db, router } = priceSetup(true);
+    db.query(
+      "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES ('m',1,'m-flagship',20,?)"
+    ).run(pricingJson(0.01, 0.02, 0.001));
+    router.invalidate();
+    const [first] = router.pick("m");
+    expect(first.provider.name).toBe("primary");
+    expect(router.routeFor(first, "m").provider_model).toBe("m-flagship");
+  });
+
+  test("tick: reorder only after 10 minutes", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'primary','http://p','k')").run();
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'backup','http://b','k')").run();
+    const ins = db.query(
+      "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES (?,?,?,?,?)"
+    );
+    ins.run(
+      "m",
+      1,
+      "m",
+      10,
+      JSON.stringify({
+        default: { price_input: 0.3, price_output: 1.2, price_cache_read: 0.006, price_cache_write: 0 },
+        rules: [
+          { windows: ["00:05-04:00"], price_input: 0.05, price_output: 0.2, price_cache_read: 0.001 },
+        ],
+      })
+    );
+    ins.run("m", 2, "m", 5, pricingJson(0.15, 0.6, 0.003));
+    db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
+    const router = new Router(db, () => 5);
+    const t0 = Date.parse("2026-09-14T00:00:00Z");
+    expect(names(router.pick("m", t0))).toEqual(["backup", "primary"]);
+    expect(names(router.pick("m", t0 + 9 * 60_000))).toEqual(["backup", "primary"]);
+    expect(names(router.pick("m", t0 + 11 * 60_000))).toEqual(["primary", "backup"]);
   });
 });
 
