@@ -48,7 +48,7 @@
     </tr>
   </thead>
   <tbody>
-    {#each sorted as r (r.provider_id + r.gateway_model)}
+    {#each sorted as r (r.provider_id + r.gateway_model + r.provider_model)}
       <tr>
         <td><span class="model">{r.gateway_model}</span></td>
         <td><span class="prov">{r.provider}</span></td>
