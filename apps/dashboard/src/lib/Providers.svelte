@@ -70,7 +70,6 @@
   const effective = (cands) => cands.findIndex((c) => stateOf(provOf(c.provider_id)) === "ok");
   const dynamicOn = $derived(cfg.dynamic_priority === "1");
   const rankOf = (c) => entryOf(c)?.rank ?? c.priority;
-  const idxOf = (c) => entryOf(c)?.price_index ?? null;
   const selOrder = (g) => [...g.cands].sort((a, b) => rankOf(a) - rankOf(b));
   const activeId = (g) => {
     const sel = selOrder(g);
@@ -204,7 +203,6 @@
         {@const price = pricesOf(c)}
         {@const rule = ruleOf(c)}
         {@const next = nextOf(c)}
-        {@const idx = idxOf(c)}
         <span class={i === 0 ? "entry" : "conn"} class:live={act === c.provider_id}></span>
         <span
           class="node"
@@ -228,7 +226,6 @@
           <span class="node-card">
             <b>{c.provider_name ?? p?.name ?? c.provider_id}</b>
             <small class="price" class:rule={rule >= 0}>{usd(price.price_input)}/{usd(price.price_output)}</small>
-            {#if idx !== null}<small class="idx">idx {idx.toFixed(3)}</small>{/if}
             {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span>{/if}
             {#if act === c.provider_id && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
           </span>
