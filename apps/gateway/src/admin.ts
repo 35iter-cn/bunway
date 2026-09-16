@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Router } from "./router";
 import { existsSync, readFileSync } from "node:fs";
-import { PRICE_KEYS, parsePricing, resolvePrices, tierOf, nextSwitch } from "./billing";
+import { PRICE_KEYS, parsePricing, resolvePrices, tierOf, nextSwitch, priceIndex } from "./billing";
 import { ZERO_PRICING } from "./db";
 
 export type ProviderInput = {
@@ -184,6 +184,7 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
 
     if (path === "/admin/pricing" && method === "GET") {
       const ts = Date.now();
+      const basis = router.orderBasis();
       const data = router.pricedRoutes().map((r) => ({
         gateway_model: r.gateway_model,
         provider_id: r.provider_id,
@@ -192,8 +193,10 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
         pricing: r.pricing,
         now: { rule: tierOf(r.pricing, ts), prices: resolvePrices(r.pricing, ts) },
         next_switch: nextSwitch(r.pricing, ts),
+        price_index: priceIndex(r, basis.ts),
+        rank: basis.rankOf(r.gateway_model, r.provider_id),
       }));
-      return Response.json({ ts, data });
+      return Response.json({ ts, dynamic_priority: basis.dynamic, computed_at: basis.ts, data });
     }
 
     if (path === "/admin/ttft" && method === "GET") {

@@ -143,6 +143,42 @@ describe("GET /admin/pricing", () => {
     expect(plain.now.rule).toBe(-1);
     expect(plain.next_switch).toBeNull();
   });
+
+  test("price_index and rank follow the order basis", async () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', 'http://up', 'k')").run();
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2, 'p2', 'http://up2', 'k')").run();
+    const ins = db.query(
+      "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES (?,?,?,?,?)"
+    );
+    ins.run("m", 1, "m-up", 10, JSON.stringify(PEAK));
+    ins.run("m", 2, "m-up", 5, JSON.stringify({ default: { ...PEAK.default, price_input: 0.15 } }));
+    const app = createApp(db, "admin-token");
+    const rankOf = (body: { data: Array<{ provider_id: number; rank: number; price_index: number }> }, provider_id: number) =>
+      body.data.find((r) => r.provider_id === provider_id)!;
+
+    const off = await (await app.fetch(new Request("http://x/admin/pricing", { headers: AH }))).json();
+    expect(off.dynamic_priority).toBe(false);
+    expect(typeof off.computed_at).toBe("number");
+    expect(rankOf(off, 1).rank).toBe(1);
+    expect(rankOf(off, 2).rank).toBe(2);
+    expect(rankOf(off, 2).price_index).toBeCloseTo(0.15 + 0.6 + 0.003, 10);
+
+    const put = await app.fetch(
+      new Request("http://x/admin/settings", {
+        method: "PUT",
+        headers: { ...AH, "Content-Type": "application/json" },
+        body: JSON.stringify({ dynamic_priority: "1" }),
+      })
+    );
+    expect(put.status).toBe(200);
+
+    const on = await (await app.fetch(new Request("http://x/admin/pricing", { headers: AH }))).json();
+    expect(on.dynamic_priority).toBe(true);
+    expect(rankOf(on, 2).rank).toBe(1);
+    expect(rankOf(on, 1).rank).toBe(2);
+    expect(rankOf(on, 1).price_index).toBeCloseTo(0.3 + 1.2 + 0.006, 10);
+  });
 });
 
 describe("GET /admin/stats/timeseries", () => {

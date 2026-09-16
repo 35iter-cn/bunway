@@ -136,7 +136,7 @@ export class Router {
     return cands.sort((a, b) => this.maxPriority(b, gatewayModel) - this.maxPriority(a, gatewayModel));
   }
 
-  orderBasis(): { ts: number | null; dynamic: boolean; rankOf: (gatewayModel: string, providerId: number) => number } {
+  orderBasis(): { ts: number; dynamic: boolean; rankOf: (gatewayModel: string, providerId: number) => number } {
     this.ensureOrder(Date.now());
     const byPriority = new Map<string, number>();
     for (const model of this.models()) {
@@ -146,7 +146,7 @@ export class Router {
         .forEach((k, i) => byPriority.set(`${model}|${k.id}`, i + 1));
     }
     return {
-      ts: this.orderTs || null,
+      ts: this.orderTs,
       dynamic: this.dynamic,
       rankOf: (gatewayModel, providerId) => {
         const at = this.ranks.get(gatewayModel)?.indexOf(providerId) ?? -1;
