@@ -94,6 +94,7 @@ export class Router {
   }
 
   private recompute(now: number): void {
+    const prev = this.ranks;
     this.ranks = new Map();
     this.orderTs = now;
     this.dynamic = this.dynamicOn();
@@ -104,7 +105,20 @@ export class Router {
         return { id: pr.provider.id, idx: priceIndex(r, now), pri: r.priority };
       });
       keyed.sort((a, b) => a.idx - b.idx || b.pri - a.pri);
-      this.ranks.set(model, keyed.map((k) => k.id));
+      const ids = keyed.map((k) => k.id);
+      const from = prev.get(model) ?? null;
+      if (from?.join() !== ids.join()) {
+        void logError({
+          level: "info",
+          event: "routing_order_changed",
+          model,
+          from,
+          to: ids,
+          index: keyed.map((k) => k.idx),
+          computed_at: now,
+        });
+      }
+      this.ranks.set(model, ids);
     }
   }
 

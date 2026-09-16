@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
 import type { ProviderRuntime } from "./router";
@@ -40,6 +42,14 @@ function priceSetup(dynamic: boolean): { db: Database; router: Router } {
 }
 
 const names = (list: ProviderRuntime[]): string[] => list.map((p) => p.provider.name);
+
+async function waitLines(lines: () => string[], n: number): Promise<string[]> {
+  for (let i = 0; i < 60; i++) {
+    if (lines().length >= n) return lines();
+    await Bun.sleep(25);
+  }
+  return lines();
+}
 
 describe("classifyError", () => {
   test("4xx matrix per spec", () => {
@@ -207,6 +217,48 @@ describe("Router dynamic price order", () => {
     expect(names(router.pick("m", t0))).toEqual(["backup", "primary"]);
     expect(names(router.pick("m", t0 + 9 * 60_000))).toEqual(["backup", "primary"]);
     expect(names(router.pick("m", t0 + 11 * 60_000))).toEqual(["primary", "backup"]);
+  });
+});
+
+describe("Router dynamic order log", () => {
+  test("logs routing_order_changed only when the order changes", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/bunway-order-log-`);
+    const prevDir = process.env.LOG_DIR;
+    process.env.LOG_DIR = dir;
+    try {
+      const { db, router } = priceSetup(true);
+      const file = `${dir}/error-${new Date().toISOString().slice(0, 10)}.log`;
+      const lines = () =>
+        existsSync(file)
+          ? readFileSync(file, "utf-8")
+              .split("\n")
+              .filter((l) => l.includes("routing_order_changed"))
+          : [];
+
+      router.pick("m");
+      expect((await waitLines(lines, 1)).length).toBe(1);
+
+      db.query("UPDATE routes SET pricing=? WHERE provider_id=1").run(pricingJson(0.15, 0.6, 0.003));
+      router.invalidate();
+      router.pick("m");
+      const after = await waitLines(lines, 2);
+      expect(after.length).toBe(2);
+      const entry = JSON.parse(after[1]) as Record<string, unknown>;
+      expect(entry.level).toBe("info");
+      expect(entry.event).toBe("routing_order_changed");
+      expect(entry.from).toEqual([2, 3, 1]);
+      expect(entry.to).toEqual([1, 2, 3]);
+
+      router.invalidate();
+      router.pick("m");
+      await Bun.sleep(120);
+      expect(lines().length).toBe(2);
+
+      const first = JSON.parse(after[0]) as Record<string, unknown>;
+      expect(first.from).toBeNull();
+    } finally {
+      process.env.LOG_DIR = prevDir;
+    }
   });
 });
 
