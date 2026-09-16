@@ -180,6 +180,12 @@ export function main(): void {
   const port = Number(env.PORT ?? 3001);
   startTester(db, app.router);
   Bun.serve({ port, fetch: app.fetch, idleTimeout: 0 });
+  void logError({
+    level: "info",
+    event: "gateway_started",
+    providers: Object.keys(app.router.states()).length,
+    routes: app.router.pricedRoutes().length,
+  });
   console.log(`bunway listening on :${port}`);
 }
 if (import.meta.main) main();
