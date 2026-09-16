@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
-import { relay, relayAndBill, injectStreamUsage, bill } from "./relay";
+import { relay, relayAndBill, injectStreamUsage, bill, providerMeta } from "./relay";
+import { normalizeRequestMessages } from "./reasoning";
 import { runAdminRoutes } from "./admin";
 import { consoleRoutes } from "./static";
 import { startTester, logError } from "./tester";
@@ -73,6 +74,7 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
       const route = router.routeFor(candidate, gatewayModel);
       const bodyJson = JSON.parse(body) as Record<string, unknown>;
       bodyJson.model = route.provider_model;
+      normalizeRequestMessages(bodyJson, providerMeta(candidate.provider).requires_reasoning_content === true);
       const upstreamBody = injectStreamUsage(JSON.stringify(bodyJson)).body;
       try {
         const upstream = await relay({
