@@ -1,13 +1,14 @@
 <script>
   import { localHM, dayMark, dayList, localWindow, windowLabel, offsetLabel } from "./fmt.js";
 
-  let { providers = [], routes = [], pricing = [], settings = [], token = "", onreload = () => {} } = $props();
+  let { providers = [], routes = [], pricing = [], settings = [], computedAt = 0, token = "", onreload = () => {} } = $props();
 
   let pending = $state(null);
   let dragKey = $state(null);
   let dragModel = $state(null);
   let overKey = $state(null);
   let saveErr = $state(null);
+  let dynErr = $state("");
 
   const PALETTE = ["var(--blue)", "var(--green)", "var(--amber)"];
   const STATE_TEXT = { ok: "OK", cool: "Cooling", dead: "Unavailable", off: "Disabled" };
@@ -67,6 +68,32 @@
   };
   const left = (p) => Math.max(0, Math.ceil((p.cooldown_until - now) / 1000));
   const effective = (cands) => cands.findIndex((c) => stateOf(provOf(c.provider_id)) === "ok");
+  const dynamicOn = $derived(cfg.dynamic_priority === "1");
+  const rankOf = (c) => entryOf(c)?.rank ?? c.priority;
+  const idxOf = (c) => entryOf(c)?.price_index ?? null;
+  const selOrder = (g) => [...g.cands].sort((a, b) => rankOf(a) - rankOf(b));
+  const activeId = (g) => {
+    const sel = selOrder(g);
+    const at = effective(sel);
+    return at < 0 ? null : sel[at].provider_id;
+  };
+
+  async function toggleDynamic(e) {
+    const on = e.currentTarget.checked;
+    dynErr = "";
+    try {
+      const res = await fetch("/admin/settings", {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({ dynamic_priority: on ? "1" : "0" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (ex) {
+      dynErr = `dynamic order switch failed: ${ex.message}`;
+    } finally {
+      await onreload();
+    }
+  }
 
   const ordered = (g) =>
     pending?.model === g.model ? pending.order.map((k) => g.cands.find((c) => rk(c) === k)).filter(Boolean) : g.cands;
@@ -150,13 +177,24 @@
   });
 </script>
 
+<div class="dyn">
+  <label>
+    <input type="checkbox" checked={dynamicOn} onchange={toggleDynamic} />
+    Dynamic price order
+  </label>
+  <span class="dyn-state">
+    {#if dynamicOn}on · cheapest provider serves · computed {computedAt ? localHM(computedAt) : "-"}{:else}off · stored priority order{/if}
+  </span>
+  {#if dynErr}<span class="rt-err">{dynErr}</span>{/if}
+</div>
+
 {#each groups as g (g.model)}
-  {@const eff = effective(ordered(g))}
+  {@const act = activeId(g)}
   <div class="rt-row">
     <span class="gm">
       {g.model}
       <small>
-        {g.cands.length} candidates{#if eff < 0}<span class="bad-cap"> · all unavailable → 502</span>{/if}
+        {g.cands.length} candidates{#if act === null}<span class="bad-cap"> · all unavailable → 502</span>{/if}
       </small>
     </span>
     <div class="chain" role="list">
@@ -166,11 +204,12 @@
         {@const price = pricesOf(c)}
         {@const rule = ruleOf(c)}
         {@const next = nextOf(c)}
-        <span class={i === 0 ? "entry" : "conn"} class:live={i === eff}></span>
+        {@const idx = idxOf(c)}
+        <span class={i === 0 ? "entry" : "conn"} class:live={act === c.provider_id}></span>
         <span
           class="node"
           role="listitem"
-          class:eff={i === eff}
+          class:eff={act === c.provider_id}
           class:st-cool={st === "cool"}
           class:st-dead={st === "dead"}
           class:st-off={st === "off"}
@@ -189,8 +228,9 @@
           <span class="node-card">
             <b>{c.provider_name ?? p?.name ?? c.provider_id}</b>
             <small class="price" class:rule={rule >= 0}>{usd(price.price_input)}/{usd(price.price_output)}</small>
+            {#if idx !== null}<small class="idx">idx {idx.toFixed(3)}</small>{/if}
             {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span>{/if}
-            {#if i === eff && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
+            {#if act === c.provider_id && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
           </span>
           <div class="pop">
             <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span></div>
@@ -217,7 +257,7 @@
         <span class="conn"></span>
         <span class="empty-slot">no fallback</span>
       {/if}
-      {#if eff < 0}<span class="bad-cap" style="margin-left:10px">→ all unavailable · 502</span>{/if}
+      {#if act === null}<span class="bad-cap" style="margin-left:10px">→ all unavailable · 502</span>{/if}
     </div>
     {#if pending?.model === g.model}
       <div class="pending">

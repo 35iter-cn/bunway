@@ -134,6 +134,12 @@ tr:hover td { background: #171b22; }
 .badge.ok { color: var(--green); border-color: rgba(93,211,158,.3); }
 .badge.bad { color: var(--red); border-color: rgba(224,92,92,.3); }
 
+.dyn { display: flex; align-items: center; gap: 10px; padding: 0 4px 10px; }
+.dyn label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: var(--t-sm); cursor: pointer; }
+.dyn input { accent-color: var(--amber); cursor: pointer; }
+.dyn .dyn-state { color: var(--faint); font-size: var(--t-xs); }
+.dyn .rt-err { padding-top: 0; }
+
 .rt-row {
   display: grid; grid-template-columns: 180px 1fr; gap: 12px;
   align-items: center; padding: 9px 4px; border-bottom: 1px solid #191d23;
@@ -153,6 +159,7 @@ tr:hover td { background: #171b22; }
 .node b { color: var(--ink); font-weight: 600; font-size: var(--t-sm); white-space: nowrap; }
 .node small { color: var(--faint); font-size: var(--t-xs); white-space: nowrap; }
 .node small.price.rule { color: var(--amber); }
+.node small.idx { color: var(--dim); }
 .node.eff .node-card { background: #1b2026; box-shadow: 0 0 0 1px rgba(242,168,59,.18); }
 .node.st-cool .node-card { border-color: rgba(242,168,59,.5); border-left-color: var(--pc); background: rgba(242,168,59,.08); opacity: .8; }
 .node.st-dead .node-card { border-style: dashed; border-color: rgba(224,92,92,.5); border-left-color: var(--pc); border-left-style: solid; background: rgba(224,92,92,.07); opacity: .7; }

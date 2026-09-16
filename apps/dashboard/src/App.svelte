@@ -19,6 +19,7 @@
   let providers = $state([]);
   let routes = $state([]);
   let pricing = $state([]);
+  let pricingComputedAt = $state(0);
   let ttft = $state({ global: null, by_provider: [] });
   let settings = $state([]);
   let err = $state("");
@@ -58,7 +59,9 @@
       errors = (await e.json()).data;
       providers = (await pv.json()).data;
       routes = (await rt.json()).data;
-      pricing = (await pr.json()).data;
+      const prBody = await pr.json();
+      pricing = prBody.data;
+      pricingComputedAt = prBody.computed_at ?? 0;
       ttft = (await tf.json()).data;
       settings = (await st.json()).data;
       lastLoad = Date.now();
@@ -160,7 +163,7 @@
           <span class="dot"></span>Route Topology
           <span class="cap">{providers.length} providers (ok {provSummary.ok} · cooling {provSummary.cool} · unavailable {provSummary.dead} · disabled {provSummary.off}) · {routes.length} routes · 5xx cooldown {cooldownMin}min/probe {probeMin}min</span>
         </h2>
-        <div class="bd"><Providers {providers} {routes} {pricing} {settings} {token} onreload={load} /></div>
+        <div class="bd"><Providers {providers} {routes} {pricing} {settings} computedAt={pricingComputedAt} {token} onreload={load} /></div>
       </section>
     {/if}
 
