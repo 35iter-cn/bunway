@@ -218,7 +218,7 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
             if (line.trim() === "data: [DONE]") sawDone = true;
             const parsed = parseSseData(line);
             if (parsed === null) {
-              outLines.push(line);
+              if (!isMessages) outLines.push(line);
               continue;
             }
             const obj = parsed as Record<string, unknown>;

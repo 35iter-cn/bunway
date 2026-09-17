@@ -373,6 +373,7 @@ describe("messages dialect", () => {
     expect(text).toContain("[DONE]");
     expect(text).not.toContain("upstream_interrupted");
     expect(text).not.toContain('"type":"ping"');
+    expect(text).not.toContain("event: ");
   });
 
   test("stream with tool_use: full tool loop mapping", async () => {
