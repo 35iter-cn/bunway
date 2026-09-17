@@ -14,6 +14,7 @@ export type Route = {
   gateway_model: string;
   provider_id: number;
   provider_model: string;
+  api: string;
   priority: number;
   pricing: string;
 };
@@ -107,6 +108,9 @@ export function openDb(path: string): Database {
     db.exec("ALTER TABLE usage_log ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0");
   } catch {}
   const routeCols = (db.query("PRAGMA table_info(routes)").all() as { name: string }[]).map((c) => c.name);
+  if (!routeCols.includes("api")) {
+    db.exec("ALTER TABLE routes ADD COLUMN api TEXT NOT NULL DEFAULT 'chat'");
+  }
   if (!routeCols.includes("pricing")) {
     db.exec(`ALTER TABLE routes ADD COLUMN pricing TEXT NOT NULL DEFAULT '${ZERO_PRICING}'`);
   }

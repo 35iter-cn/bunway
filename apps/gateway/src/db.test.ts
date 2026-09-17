@@ -5,8 +5,9 @@ import { unlinkSync, existsSync } from "node:fs";
 
 const tmp = "/tmp/llmgw-db-test.db";
 const legacy = "/tmp/llmgw-db-legacy.db";
-if (existsSync(tmp)) unlinkSync(tmp);
-if (existsSync(legacy)) unlinkSync(legacy);
+const apiTmp = "/tmp/llmgw-db-api.db";
+const apiLegacy = "/tmp/llmgw-db-api-legacy.db";
+for (const f of [tmp, legacy, apiTmp, apiLegacy]) if (existsSync(f)) unlinkSync(f);
 
 const colsOf = (db: Database) =>
   (db.query("PRAGMA table_info(routes)").all() as { name: string }[]).map((c) => c.name);
@@ -98,5 +99,38 @@ describe("db", () => {
     const again = openDb(legacy);
     expect(colsOf(again)).toEqual(cols);
     expect(again.query<{ pricing: string }, []>("SELECT pricing FROM routes").get()!.pricing).toBe(migrated.pricing);
+  });
+
+  test("fresh db routes have api defaulting to chat", () => {
+    const db = openDb(apiTmp);
+    expect(colsOf(db)).toContain("api");
+    db.query("INSERT OR IGNORE INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', 'http://x', 'k')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model) VALUES ('fresh', 1, 'up')").run();
+    const row = db.query<{ api: string }, []>("SELECT api FROM routes WHERE gateway_model='fresh'").get()!;
+    expect(row.api).toBe("chat");
+  });
+
+  test("migrates a legacy routes table without api column, defaulting to chat", () => {
+    const old = new Database(apiLegacy, { create: true });
+    old.exec(`CREATE TABLE routes (
+      gateway_model TEXT NOT NULL,
+      provider_id INTEGER NOT NULL,
+      provider_model TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 1,
+      pricing TEXT NOT NULL DEFAULT '${ZERO_PRICING}',
+      PRIMARY KEY (gateway_model, provider_id, provider_model)
+    )`);
+    old
+      .query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES ('legacy-m', 1, 'up', 3)")
+      .run();
+    old.close();
+
+    const db = openDb(apiLegacy);
+    const row = db.query<{ api: string; priority: number }, []>("SELECT api, priority FROM routes").get()!;
+    expect(row.api).toBe("chat");
+    expect(row.priority).toBe(3);
+
+    const again = openDb(legacy);
+    expect(colsOf(again).filter((c) => c === "api").length).toBe(1);
   });
 });
