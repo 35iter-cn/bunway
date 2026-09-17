@@ -105,14 +105,18 @@ export function nextSwitch(pricing: Pricing, ts: number): { ts: number; rule: nu
 export function normalizeUsage(usage: unknown): NormalizedUsage | null {
   if (!usage || typeof usage !== "object") return null;
   const u = usage as Record<string, unknown>;
-  const prompt = toNum(u.prompt_tokens);
-  const completion = toNum(u.completion_tokens);
+  let prompt = toNum(u.prompt_tokens);
+  let completion = toNum(u.completion_tokens);
+  if (prompt === null && completion === null) {
+    prompt = toNum(u.input_tokens);
+    completion = toNum(u.output_tokens);
+  }
   if (prompt === null && completion === null) return null;
 
   let cacheRead = 0;
   let cacheWrite = 0;
 
-  const dsHit = toNum(u.prompt_cache_hit_tokens);
+  const dsHit = toNum(u.prompt_cache_hit_tokens) ?? toNum(u.cache_read_input_tokens);
   const cacheCreation = toNum(u.cache_creation_input_tokens);
   const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
   if (dsHit !== null) {

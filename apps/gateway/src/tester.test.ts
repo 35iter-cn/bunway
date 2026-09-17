@@ -92,3 +92,37 @@ describe("cleanupOldLogs", () => {
     expect(existsSync("logs")).toBe(false);
   });
 });
+describe("per-unit probe with dialect", () => {
+  test("messages unit probes /v1/messages with x-api-key and recovers only itself", async () => {
+    const hits: { path: string; auth: string | null; body: string }[] = [];
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        hits.push({
+          path: new URL(req.url).pathname,
+          auth: req.headers.get("x-api-key"),
+          body: await req.text(),
+        });
+        return Response.json({ ok: true });
+      },
+    });
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'pm',?,'mk')").run(`http://localhost:${server.port}`);
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('alpha',1,'alpha-up',1,'messages')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('beta',1,'beta-up',1,'chat')").run();
+    const router = new Router(db, () => 5);
+    router.markResult("alpha", 1, "unavailable");
+    router.markResult("beta", 1, "unavailable");
+    await runTestOnce(db, router);
+    const alphaHit = hits.find((h) => h.path === "/v1/messages");
+    expect(alphaHit).toBeDefined();
+    expect(alphaHit!.auth).toBe("mk");
+    const parsed = JSON.parse(alphaHit!.body);
+    expect(parsed.model).toBe("alpha-up");
+    expect(parsed.max_tokens).toBe(1);
+    expect(hits.some((h) => h.path === "/v1/chat/completions")).toBe(true);
+    expect(router.pick("alpha").length).toBe(1);
+    expect(router.pick("beta").length).toBe(1);
+    expect(hits.length).toBe(2);
+  });
+});

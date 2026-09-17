@@ -321,6 +321,107 @@ describe("relay", () => {
   });
 });
 
+
+describe("messages dialect", () => {
+  function messagesSetup(base: string): { db: Database; req: Parameters<typeof relay>[0] } {
+    const s = setup(base);
+    s.req.api = "messages";
+    s.req.body = JSON.stringify({ model: "m-up", messages: [{ role: "user", content: "hi" }], max_tokens: 8192 });
+    return s;
+  }
+
+  test("sends to /v1/messages with x-api-key + anthropic-version", async () => {
+    const base = mockUpstream(() =>
+      Response.json({
+        id: "msg_1", type: "message", role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 3 },
+      })
+    );
+    const { db, req } = messagesSetup(base);
+    const out = await relayAndBill(req, await relay(req));
+    expect(received[0].headers.get("x-api-key")).toBe("k");
+    expect(received[0].headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(received[0].headers.get("authorization")).toBeNull();
+    const json = JSON.parse(await out.text()) as Record<string, unknown>;
+    expect((json.choices as Record<string, unknown>[])[0].message.content).toBe("hello");
+    const row = db.query("SELECT * FROM usage_log").get() as Record<string, unknown>;
+    expect(row.prompt_tokens).toBe(10);
+    expect(row.completion_tokens).toBe(3);
+  });
+
+  test("stream: message_stop terminates (no interrupted), ping ignored, [DONE] appended", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":7}}}\n\n` +
+            `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n` +
+            `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hey"}}\n\n` +
+            `event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n` +
+            `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n` +
+            `event: message_stop\ndata: {"type":"message_stop"}\n\n` +
+            `event: ping\ndata: {"type":"ping","cost":"0"}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = messagesSetup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain('"content":"hey"');
+    expect(text).toContain('"finish_reason":"stop"');
+    expect(text).toContain("[DONE]");
+    expect(text).not.toContain("upstream_interrupted");
+    expect(text).not.toContain('"type":"ping"');
+  });
+
+  test("stream with tool_use: full tool loop mapping", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":9}}}\n\n` +
+            `data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n` +
+            `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"let me check"}}\n\n` +
+            `data: {"type":"content_block_stop","index":0}\n\n` +
+            `data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"get_weather"}}\n\n` +
+            `data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}\n\n` +
+            `data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"sf\"}"}}\n\n` +
+            `data: {"type":"content_block_stop","index":1}\n\n` +
+            `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}\n\n` +
+            `data: {"type":"message_stop"}\n\n` +
+            `data: {"type":"ping","cost":"0"}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { db, req } = messagesSetup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain('"tool_calls"');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+    expect(text).toContain("[DONE]");
+    expect(text).not.toContain("upstream_interrupted");
+    const rows = db.query("SELECT * FROM usage_log").all() as Record<string, unknown>[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].prompt_tokens).toBe(9);
+    expect(rows[0].completion_tokens).toBe(4);
+  });
+
+  test("stream closed without message_stop: interrupted error frame", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = messagesSetup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain("upstream closed without message_stop");
+    expect(text).toContain("upstream_interrupted");
+  });
+});
+
 describe("injectStreamUsage", () => {
   test("injects when missing", () => {
     const { body, injected } = injectStreamUsage(JSON.stringify({ stream: true, messages: [] }));

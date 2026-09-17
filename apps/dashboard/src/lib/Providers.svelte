@@ -57,6 +57,9 @@
   };
   const provOf = (id) => providers.find((p) => p.id === id);
   const stateOf = (p) => (!p ? "ok" : p.enabled === 0 ? "off" : p.unavailable ? "dead" : p.cooldown_until > now ? "cool" : "ok");
+  const unitsOf = (p) => (Array.isArray(p?.units) ? p.units : []);
+  const unitState = (u) => (u.unavailable ? "dead" : u.cooldown_until > now ? "cool" : "ok");
+  const unitLeft = (u) => Math.max(0, Math.ceil((u.cooldown_until - now) / 1000));
   const color = (id) => PALETTE[Math.max(0, providers.findIndex((p) => p.id === id)) % PALETTE.length];
   const routesOf = (id) => routes.filter((r) => r.provider_id === id);
   const fwd = (p) => {
@@ -232,6 +235,20 @@
           <div class="pop">
             <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span></div>
             <div class="pu">{p?.base_url ?? "?"}</div>
+            {#if unitsOf(p).length > 1}
+              <table><tbody>
+                {#each unitsOf(p) as u (u.gateway_model)}
+                  <tr>
+                    <td>{u.gateway_model}</td>
+                    <td>
+                      {#if unitState(u) === "dead"}<span class="st dead">Unavailable</span>
+                      {:else if unitState(u) === "cool"}<span class="st cool">Cooling · {unitLeft(u)}s left</span>
+                      {:else}<span class="st ok">OK</span>{/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody></table>
+            {/if}
             <table><tbody>
               <tr><td>provider_model</td><td>{c.provider_model}</td></tr>
               <tr><td>priority / order</td><td>{c.priority} / #{i + 1}</td></tr>

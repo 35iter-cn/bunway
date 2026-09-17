@@ -186,6 +186,7 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
   let sawDone = false;
   let sawMessageStop = false;
   let aborted = false;
+  let usage: Record<string, unknown> | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -212,7 +213,7 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
           const text = pending + decoder.decode(value, { stream: true });
           const lines = text.split("\n");
           pending = lines.pop() ?? "";
-          const outLines: string[] = [];
+        const outLines: string[] = [];
           for (const line of lines) {
             if (line.trim() === "data: [DONE]") sawDone = true;
             const parsed = parseSseData(line);
@@ -222,8 +223,12 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
             }
             const obj = parsed as Record<string, unknown>;
             if (isMessages) {
-              const usage = messagesUsageOf(obj);
-              if (usage != null) {
+              if (obj.type === "message_start") {
+                const startUsage = (obj.message as Record<string, unknown> | undefined)?.usage;
+                if (startUsage && typeof startUsage === "object") usage = { ...startUsage };
+              }
+              if (obj.type === "message_delta" && obj.usage != null) {
+                usage = { ...(usage ?? {}), ...(obj.usage as Record<string, unknown>) };
                 bill(req, usage);
                 captured = true;
               }

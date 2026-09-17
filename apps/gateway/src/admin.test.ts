@@ -424,3 +424,38 @@ describe("route pricing API", () => {
     expect((await list(app))[0].pricing).toEqual(pricing);
   });
 });
+
+describe("route api dialect field", () => {
+  test("POST /admin/routes accepts api and returns 400 on invalid value", async () => {
+    const { db, app } = seed([]);
+    const ok = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: AH, body: JSON.stringify({ gateway_model: "r1", provider_id: 1, provider_model: "up", api: "messages" }) }));
+    expect(ok.status).toBe(200);
+    const row = db.query("SELECT api FROM routes WHERE gateway_model='r1'").get() as { api: string };
+    expect(row.api).toBe("messages");
+
+    const bad = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: AH, body: JSON.stringify({ gateway_model: "r2", provider_id: 1, provider_model: "up", api: "anthropic" }) }));
+    expect(bad.status).toBe(400);
+    expect((db.query("SELECT COUNT(*) c FROM routes WHERE gateway_model='r2'").get() as { c: number }).c).toBe(0);
+  });
+
+  test("GET /admin/routes returns api; PUT updates it; default is chat", async () => {
+    const { db, app } = seed([]);
+    const one = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { headers: AH }));
+    expect((((await one.json()) as { data: { api: string } }).data).api).toBe("chat");
+
+    const put = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: "responses" }) }));
+    expect(put.status).toBe(200);
+    const row = db.query("SELECT api FROM routes WHERE gateway_model='m'").get() as { api: string };
+    expect(row.api).toBe("responses");
+
+    const badPut = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: "nope" }) }));
+    expect(badPut.status).toBe(400);
+  });
+
+  test("GET /admin/providers exposes per-model units with derived provider state", async () => {
+    const { app, db } = seed([]);
+    const res = await app.fetch(new Request("http://x/admin/providers", { headers: AH }));
+    const data = (await res.json()).data as Array<Record<string, unknown>>;
+    expect(data[0].units).toEqual([{ gateway_model: "m", unavailable: false, cooldown_until: 0 }]);
+  });
+});

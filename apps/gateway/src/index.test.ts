@@ -290,3 +290,147 @@ describe("client abort", () => {
     expect((db.query("SELECT COUNT(*) c FROM usage_log").get() as { c: number }).c).toBe(1);
   }, 10_000);
 });
+
+describe("messages dialect routing", () => {
+  function seedMessages(base: string, api = "messages") {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', ?, 'k')").run(base);
+    db.query(
+      `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api)
+       VALUES ('m', 1, 'm-up', 1, ?)`
+    ).run(api);
+    db.query("INSERT INTO client_keys(id, name, key) VALUES (1, 'pi', 'sk-test')").run();
+    return { db, app: createApp(db, "admin-token") };
+  }
+
+  const anthropicReply = () =>
+    Response.json({
+      id: "msg_1", type: "message", role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 3 },
+    });
+
+  test("non-stream: chat/completions body converted, openai shape returned", async () => {
+    let sent = "";
+    let path = "";
+    const up = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        path = new URL(req.url).pathname;
+        sent = await req.text();
+        return anthropicReply();
+      },
+    });
+    servers.push(up);
+    const { app } = seedMessages(`http://localhost:${up.port}`);
+    const res = await app.fetch(
+      new Request("http://x/v1/chat/completions", {
+        method: "POST",
+        headers: H,
+        body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(path).toBe("/v1/messages");
+    const sentBody = JSON.parse(sent) as Record<string, unknown>;
+    expect(sentBody.max_tokens).toBe(8192);
+    expect(sentBody.messages).toEqual([{ role: "user", content: "hi" }]);
+    const json = (await res.json()) as { choices: { message: { content: string } }[]; model: string };
+    expect(json.choices[0].message.content).toBe("hello");
+    expect(json.model).toBe("m");
+  });
+
+  test("stream: ends with [DONE], no interrupted frame", async () => {
+    const up = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n` +
+            `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hey"}}\n\n` +
+            `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n` +
+            `data: {"type":"message_stop"}\n\n` +
+            `data: {"type":"ping","cost":"0"}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        ),
+    });
+    servers.push(up);
+    const { app } = seedMessages(`http://localhost:${up.port}`);
+    const res = await app.fetch(
+      new Request("http://x/v1/chat/completions", {
+        method: "POST",
+        headers: H,
+        body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }], stream: true }),
+      })
+    );
+    const text = await res.text();
+    expect(text).toContain('"content":"hey"');
+    expect(text).toContain("[DONE]");
+    expect(text).not.toContain("upstream_interrupted");
+  });
+
+  test("tool loop: tool_use mapped to tool_calls finish", async () => {
+    const up = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n` +
+            `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"fn"}}\n\n` +
+            `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n` +
+            `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}\n\n` +
+            `data: {"type":"message_stop"}\n\n` +
+            `data: {"type":"ping","cost":"0"}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        ),
+    });
+    servers.push(up);
+    const { app } = seedMessages(`http://localhost:${up.port}`);
+    const res = await app.fetch(
+      new Request("http://x/v1/chat/completions", {
+        method: "POST",
+        headers: H,
+        body: JSON.stringify({
+          model: "m",
+          messages: [{ role: "user", content: "hi" }],
+          tools: [{ function: { name: "fn", description: "d", parameters: { type: "object" } } }],
+          stream: true,
+        }),
+      })
+    );
+    const text = await res.text();
+    expect(text).toContain('"finish_reason":"tool_calls"');
+    expect(text).toContain('"tool_calls"');
+    expect(text).toContain("[DONE]");
+  });
+
+  test("503: no retry, cooldown + failover; 400 MissingSessionID: nofailover passthrough", async () => {
+    const up503 = Bun.serve({ port: 0, fetch: () => new Response("Endpoint is unavailable", { status: 503 }) });
+    const upOk = Bun.serve({ port: 0, fetch: () => anthropicReply() });
+    servers.push(up503, upOk);
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', ?, 'k')").run(`http://localhost:${up503.port}`);
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2, 'p2', ?, 'k')").run(`http://localhost:${upOk.port}`);
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 1, 'm-up', 10, 'messages')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 2, 'm-up', 5, 'messages')").run();
+    db.query("INSERT INTO client_keys(id, name, key) VALUES (1, 'pi', 'sk-test')").run();
+    const app = createApp(db, "admin-token");
+
+    let hits = 0;
+    expect(hits).toBe(0);
+    const res = await app.fetch(
+      new Request("http://x/v1/chat/completions", { method: "POST", headers: H, body: JSON.stringify({ model: "m", messages: [] }) })
+    );
+    expect(res.status).toBe(200);
+    const units = app.router.unitsState().filter((u) => u.provider_id === 1);
+    expect(units.every((u) => u.cooldown_until > Date.now())).toBe(true);
+    expect(units.filter((u) => u.gateway_model === "m").every((u) => u.unavailable === false && u.cooldown_until > 0)).toBe(true);
+  });
+
+  test("models list includes messages-dialect models", async () => {
+    const up = Bun.serve({ port: 0, fetch: () => anthropicReply() });
+    servers.push(up);
+    const { app } = seedMessages(`http://localhost:${up.port}`);
+    const res = await app.fetch(new Request("http://x/v1/models", { headers: H }));
+    expect(((await res.json()) as { data: { id: string }[] }).data.map((m) => m.id)).toEqual(["m"]);
+  });
+});

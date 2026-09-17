@@ -153,7 +153,7 @@ export function messagesEventChunks(
           choices: [
             {
               index: 0,
-              delta: { tool_calls: [{ index: block.index, id: block.id, type: "function", function: { name: block.name, arguments: "" } }] },
+              delta: { tool_calls: [{ index: event.index, id: block.id, type: "function", function: { name: block.name, arguments: "" } }] },
             },
           ],
         },
