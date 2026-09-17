@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
-import type { ProviderRuntime } from "./router";
+import type { UnitRuntime } from "./router";
 import type { Database } from "bun:sqlite";
 
 function setup(): { db: Database; router: Router } {  const db = openDb(":memory:");
@@ -42,7 +42,7 @@ function priceSetup(dynamic: boolean): { db: Database; router: Router } {
   if (dynamic) db.query("UPDATE settings SET value='1' WHERE key='dynamic_priority'").run();
   return { db, router: new Router(db, () => 5) };
 }
-const names = (list: ProviderRuntime[]): string[] => list.map((p) => p.provider.name);
+const names = (list: UnitRuntime[]): string[] => list.map((u) => u.provider.name);
 
 async function waitLines(lines: () => string[], n: number): Promise<string[]> {
   for (let i = 0; i < 60; i++) {
@@ -83,8 +83,8 @@ describe("Router.pick", () => {
   test("unavailable and cooldown skipped", () => {
     const { router } = setup();
     const picked = router.pick("glm");
-    router.markResult(picked[0], "unavailable");
-    router.markResult(picked[1], "cooldown");
+    router.markResult("glm", picked[0].provider.id, "unavailable");
+    router.markResult("glm", picked[1].provider.id, "cooldown");
     const after = router.pick("glm");
     expect(after.map((p) => p.provider.name)).toEqual(["last"]);
   });
@@ -92,7 +92,7 @@ describe("Router.pick", () => {
   test("cooldown expires → back in pool", () => {
     const { router } = setup();
     const [primary] = router.pick("glm");
-    router.markResult(primary, "cooldown");
+    router.markResult("glm", primary.provider.id, "cooldown");
     expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
     const later = Date.now() + 6 * 60_000;
     expect(router.pick("glm", later).map((p) => p.provider.name)).toEqual(["primary", "backup", "last"]);
@@ -108,7 +108,7 @@ describe("Router.pick", () => {
   test("disabled provider excluded entirely", () => {
     const { router } = setup();
     const [primary] = router.pick("glm");
-    router.markResult(primary, "unavailable");
+    router.markResult("glm", primary.provider.id, "unavailable");
     expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
   });
 
@@ -121,9 +121,9 @@ describe("Router.pick", () => {
     const { router } = setup();
     const [primary] = router.pick("glm");
     const t0 = Date.now();
-    router.markResult(primary, "cooldown", t0);
-    router.markResult(primary, "cooldown", t0 + 30_000);
-    router.markResult(primary, "cooldown", t0 + 59_000);
+    router.markResult("glm", primary.provider.id, "cooldown", t0);
+    router.markResult("glm", primary.provider.id, "cooldown", t0 + 30_000);
+    router.markResult("glm", primary.provider.id, "cooldown", t0 + 59_000);
     expect(router.pick("glm", t0 + 6 * 60_000).map((p) => p.provider.name)).toEqual(["primary", "backup", "last"]);
   });
 
@@ -134,12 +134,12 @@ describe("Router.pick", () => {
     let minutes = 5;
     const router = new Router(db, () => minutes);
     const [p] = router.pick("m");
-    router.markResult(p, "cooldown");
+    router.markResult("m", p.provider.id, "cooldown");
     expect(router.pick("m", Date.now() + 4 * 60_000)).toEqual([]);
     expect(router.pick("m", Date.now() + 6 * 60_000).length).toBe(1);
     minutes = 30;
-    router.markAvailable(p);
-    router.markResult(p, "cooldown");
+    router.markAvailable(p.provider.id, "m");
+    router.markResult("m", p.provider.id, "cooldown");
     expect(router.pick("m", Date.now() + 6 * 60_000)).toEqual([]);
     expect(router.pick("m", Date.now() + 31 * 60_000).length).toBe(1);
   });
@@ -149,10 +149,78 @@ describe("Router.states", () => {
     const { router } = setup();
     const [primary] = router.pick("glm");
     expect(router.states()[1]).toEqual({ unavailable: false, cooldown_until: 0 });
-    router.markResult(primary, "cooldown");
+    router.markResult("glm", primary.provider.id, "cooldown");
     expect(router.states()[1].cooldown_until).toBeGreaterThan(Date.now());
-    router.markResult(primary, "unavailable");
+    router.markResult("glm", primary.provider.id, "unavailable");
     expect(router.states()[1]).toEqual({ unavailable: true, cooldown_until: 0 });
+  });
+});
+
+describe("failure domain per unit (provider × model)", () => {
+  function multiModelSetup(): { db: Database; router: Router } {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'p1','http://p','k')").run();
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'p2','http://b','k')").run();
+    const ins = db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES (?,?,?,?)");
+    ins.run("alpha", 1, "alpha", 10);
+    ins.run("beta", 1, "beta", 10);
+    ins.run("alpha", 2, "alpha", 5);
+    ins.run("beta", 2, "beta", 5);
+    db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
+    return { db, router: new Router(db, () => 5) };
+  }
+
+  test("cooldown on one model does not freeze sibling models of the same provider", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 1, "cooldown");
+    expect(router.pick("alpha").map((u) => u.provider.name)).toEqual(["p2"]);
+    expect(router.pick("beta").map((u) => u.provider.name)).toEqual(["p1", "p2"]);
+  });
+
+  test("unavailable on one unit only blocks itself; sibling candidates remain", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 1, "unavailable");
+    expect(router.pick("beta").map((u) => u.provider.name)).toEqual(["p1", "p2"]);
+    expect(router.pick("alpha").map((u) => u.provider.name)).toEqual(["p2"]);
+  });
+
+  test("recovery clears only the recovered unit", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 1, "unavailable");
+    router.markResult("beta", 1, "unavailable");
+    router.markAvailable(1, "alpha");
+    expect(router.pick("alpha").map((u) => u.provider.name)).toEqual(["p1", "p2"]);
+    expect(router.pick("beta").map((u) => u.provider.name)).toEqual(["p2"]);
+  });
+
+  test("provider-level state derives from units: all units down → unavailable", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 1, "unavailable");
+    expect(router.states()[1].unavailable).toBe(false);
+    router.markResult("beta", 1, "unavailable");
+    expect(router.states()[1].unavailable).toBe(true);
+    router.markAvailable(1, "alpha");
+    expect(router.states()[1].unavailable).toBe(false);
+  });
+
+  test("unitsState exposes per-model status for admin", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 1, "cooldown");
+    const units = router.unitsState().filter((u) => u.provider_id === 1);
+    const alpha = units.find((u) => u.gateway_model === "alpha")!;
+    const beta = units.find((u) => u.gateway_model === "beta")!;
+    expect(alpha.cooldown_until).toBeGreaterThan(Date.now());
+    expect(alpha.unavailable).toBe(false);
+    expect(beta.cooldown_until).toBe(0);
+  });
+
+  test("unavailableUnits lists only units marked unavailable", () => {
+    const { router } = multiModelSetup();
+    router.markResult("alpha", 2, "unavailable");
+    const units = router.unavailableUnits();
+    expect(units.length).toBe(1);
+    expect(units[0].provider.id).toBe(2);
+    expect(units[0].gatewayModel).toBe("alpha");
   });
 });
 
@@ -177,11 +245,11 @@ describe("Router dynamic price order", () => {
   test("on: unavailable and cooldown filtered before ranking", () => {
     const { router } = priceSetup(true);
     const [backup] = router.pick("m");
-    router.markResult(backup, "unavailable");
+    router.markResult("m", backup.provider.id, "unavailable");
     expect(names(router.pick("m"))).toEqual(["last", "primary"]);
   });
 
-  test("on: routeFor keeps the provider's highest-priority route", () => {
+  test("on: unit keeps the provider's highest-priority route", () => {
     const { db, router } = priceSetup(true);
     db.query(
       "INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing) VALUES ('m',1,'m-flagship',20,?)"
@@ -189,7 +257,7 @@ describe("Router dynamic price order", () => {
     router.invalidate();
     const [first] = router.pick("m");
     expect(first.provider.name).toBe("primary");
-    expect(router.routeFor(first, "m").provider_model).toBe("m-flagship");
+    expect(first.route.provider_model).toBe("m-flagship");
   });
 
   test("tick: reorder only after 10 minutes", () => {
@@ -272,14 +340,14 @@ describe("Router dynamic order log", () => {
 describe("Router.reload pricing gate", () => {
   test("route with unparseable pricing is dropped, valid siblings survive", () => {
     const { db, router } = setup();
-    expect(router.routeFor(router.pick("glm")[0], "glm").pricing.default.price_input).toBe(0);
+    expect(router.pick("glm")[0].route.pricing.default.price_input).toBe(0);
     db.query("UPDATE routes SET pricing='{oops' WHERE provider_id=1").run();
     db.query(
       `UPDATE routes SET pricing='{"default":{"price_input":0.3,"price_output":1.2,"price_cache_read":0.006,"price_cache_write":0}}' WHERE provider_id=2`
     ).run();
     router.invalidate();
     expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["backup", "last"]);
-    expect(router.routeFor(router.pick("glm")[0], "glm").pricing.default.price_output).toBe(1.2);
+    expect(router.pick("glm")[0].route.pricing.default.price_output).toBe(1.2);
   });
 
   test("provider whose only route is invalid disappears from candidates", () => {

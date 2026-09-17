@@ -26,7 +26,7 @@ describe("runTestOnce", () => {
     server = Bun.serve({ port: 0, fetch: () => new Response("nope", { status: 500 }) });
     const { db, router } = setup(`http://localhost:${server.port}`);
     const [p] = router.pick("m");
-    router.markResult(p, "unavailable");
+    router.markResult("m", p.provider.id, "unavailable");
     await runTestOnce(db, router);
     expect(router.pick("m")).toEqual([]);
     const log = readFileSync(`logs/error-${new Date().toISOString().slice(0, 10)}.log`, "utf8");
@@ -41,7 +41,7 @@ describe("runTestOnce", () => {
     });
     const { db, router } = setup(`http://localhost:${server.port}`);
     const [p] = router.pick("m");
-    router.markResult(p, "unavailable");
+    router.markResult("m", p.provider.id, "unavailable");
     await runTestOnce(db, router);
     expect(router.pick("m").length).toBe(1);
   });
@@ -57,7 +57,7 @@ describe("runTestOnce", () => {
     });
     const { db, router } = setup(`http://localhost:${server.port}`);
     const [p] = router.pick("m");
-    router.markResult(p, "unavailable");
+    router.markResult("m", p.provider.id, "unavailable");
     await runTestOnce(db, router);
     const parsed = JSON.parse(body);
     expect(parsed.max_tokens).toBe(1);

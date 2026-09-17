@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { Router } from "./router";
+import type { Router, UnitRuntime } from "./router";
+import { upstreamUrl, applyAuth } from "./dialect";
+import type { ApiDialect } from "./dialect";
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 
@@ -13,34 +15,43 @@ export function getSetting(db: Database, key: string, fallback: number): number 
 }
 
 export async function runTestOnce(db: Database, router: Router): Promise<void> {
-  for (const pr of router.unavailableProviders()) {
-    const route = pr.routes[0];
-    if (!route) continue;
-    let ok = false;
-    try {
-      const res = await fetch(`${pr.provider.base_url.replace(/\/$/, "")}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${pr.provider.api_key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: route.provider_model,
-          messages: [{ role: "user", content: "ping" }],
-          max_tokens: 1,
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      ok = res.ok;
-      if (!ok) await drainSafe(res);
-    } catch (err) {
-      ok = false;
-      await logError({ level: "error", event: "probe_failed", provider: pr.provider.name, error: err instanceof Error ? err.message : String(err) });
-    }
+  for (const unit of router.unavailableUnits()) {
+    const ok = await probeUnit(unit);
     if (ok) {
-      router.markAvailable(pr);
-      await logError({ level: "info", event: "probe_recovered", provider: pr.provider.name });
+      router.markAvailable(unit.provider.id, unit.gatewayModel);
+      await logError({ level: "info", event: "probe_recovered", provider: unit.provider.name, model: unit.gatewayModel });
     } else {
-      await logError({ level: "error", event: "probe_still_failing", provider: pr.provider.name });
+      await logError({ level: "error", event: "probe_still_failing", provider: unit.provider.name, model: unit.gatewayModel });
     }
   }
+}
+
+export async function probeUnit(unit: UnitRuntime): Promise<boolean> {
+  const { provider, route, gatewayModel } = unit;
+  try {
+    const res = await fetch(upstreamUrl(provider, route.api as ApiDialect), {
+      method: "POST",
+      headers: buildProbeHeaders(provider, route.api as ApiDialect),
+      body: JSON.stringify({
+        model: route.provider_model,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) await drainSafe(res);
+    return res.ok;
+  } catch (err) {
+    await logError({ level: "error", event: "probe_failed", provider: provider.name, model: gatewayModel, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+function buildProbeHeaders(provider: UnitRuntime["provider"], api: ApiDialect): Headers {
+  const h = new Headers();
+  applyAuth(h, provider, api);
+  h.set("Content-Type", "application/json");
+  return h;
 }
 
 export function startTester(db: Database, router: Router): void {

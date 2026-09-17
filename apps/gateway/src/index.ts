@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
 import { relay, relayAndBill, injectStreamUsage, bill, providerMeta } from "./relay";
+import { toMessagesRequest } from "./anthropic";
 import { normalizeRequestMessages } from "./reasoning";
 import { runAdminRoutes } from "./admin";
 import { consoleRoutes } from "./static";
@@ -71,16 +72,21 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
 
     const started = Date.now();
     for (const candidate of candidates) {
-      const route = router.routeFor(candidate, gatewayModel);
+      const route = candidate.route;
+      const api = (route.api ?? "chat") as "chat" | "messages" | "responses";
       const bodyJson = JSON.parse(body) as Record<string, unknown>;
       bodyJson.model = route.provider_model;
       normalizeRequestMessages(bodyJson, providerMeta(candidate.provider).requires_reasoning_content === true);
-      const upstreamBody = injectStreamUsage(JSON.stringify(bodyJson)).body;
+      const upstreamBody =
+        api === "messages"
+          ? JSON.stringify(toMessagesRequest(bodyJson))
+          : injectStreamUsage(JSON.stringify(bodyJson)).body;
       try {
         const upstream = await relay({
           db,
           provider: candidate.provider,
           route,
+          api,
           keyId,
           gatewayModel,
           body: upstreamBody,
@@ -89,16 +95,16 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
           startedAt: started,
         });
         if (upstream.ok) {
-          router.markResult(candidate, "ok");
+          router.markResult(gatewayModel, candidate.provider.id, "ok");
           const out = await relayAndBill(
-            { db, provider: candidate.provider, route, keyId, gatewayModel, body: upstreamBody, clientHeaders: req.headers, startedAt: started },
+            { db, provider: candidate.provider, route, api, keyId, gatewayModel, body: upstreamBody, clientHeaders: req.headers, startedAt: started },
             upstream
           );
           if (responsesApi && out.body) return convertChatToResponseStreamOrJson(out, gatewayModel);
           return out;
         }
         const cls = classifyError(upstream.status);
-        router.markResult(candidate, cls);
+        router.markResult(gatewayModel, candidate.provider.id, cls);
         if (cls === "nofailover") {
           const errorBody = await upstream.text();
           void logError({ level: "error", event: "upstream_rejected", provider: candidate.provider.name, status: upstream.status, model: gatewayModel, error_body: errorBody.slice(0, 500) });
@@ -112,7 +118,7 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
           break;
         }
         void logError({ level: "error", event: "upstream_error", provider: candidate.provider.name, model: gatewayModel, error: err instanceof Error ? err.message : String(err) });
-        router.markResult(candidate, classifyError(null, err));
+        router.markResult(gatewayModel, candidate.provider.id, classifyError(null, err));
       }
     }
     return jsonError(502, "all providers failed");

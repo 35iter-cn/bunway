@@ -35,6 +35,16 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
 
   type Priced = { ok: true; value: string } | { ok: false; error: string };
 
+  const API_DIALECTS = new Set(["chat", "messages", "responses"]);
+
+  function apiColumn(input: Record<string, unknown>): { ok: true; value: string } | { ok: false; error: string } {
+    if (input.api === undefined) return { ok: true, value: "chat" };
+    if (typeof input.api !== "string" || !API_DIALECTS.has(input.api)) {
+      return { ok: false, error: `api must be one of ${[...API_DIALECTS].join("|")}` };
+    }
+    return { ok: true, value: input.api };
+  }
+
   // 写路径唯一闸门：拒绝旧扁平价、验证 pricing 结构，省略时回落四个 0
   function pricingColumn(input: Record<string, unknown>): Priced {
     for (const k of PRICE_KEYS) {
@@ -59,10 +69,10 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
   const withPricing = <T extends { pricing: string }>(row: T) => ({ ...row, pricing: parsePricing(row.pricing) });
 
   const insRoute = db.query(
-    `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO routes(gateway_model, provider_id, provider_model, api, priority, pricing)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(gateway_model, provider_id, provider_model) DO UPDATE SET
-       priority=excluded.priority, pricing=excluded.pricing`
+       api=excluded.api, priority=excluded.priority, pricing=excluded.pricing`
   );
 
   function providerExists(id: number): boolean {
@@ -78,12 +88,16 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     if (path === "/admin/providers") {
       if (method === "GET") {
         const states = router.states();
+        const unitStates = router.unitsState();
         const rows = db.query("SELECT * FROM providers").all() as Array<{ id: number }>;
         return Response.json({
           data: rows.map((p) => ({
             ...p,
             unavailable: states[p.id]?.unavailable ?? false,
             cooldown_until: states[p.id]?.cooldown_until ?? 0,
+            units: unitStates
+              .filter((u) => u.provider_id === p.id)
+              .map(({ gateway_model, unavailable, cooldown_until }) => ({ gateway_model, unavailable, cooldown_until })),
           })),
         });
       }
@@ -417,16 +431,18 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     }
 
     const insRoute = db.query(
-      `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, pricing)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO routes(gateway_model, provider_id, provider_model, api, priority, pricing)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(gateway_model, provider_id, provider_model) DO UPDATE SET
-         priority=excluded.priority, pricing=excluded.pricing`
+         api=excluded.api, priority=excluded.priority, pricing=excluded.pricing`
     );
     for (const r of input.routes ?? []) {
       if (!r.gateway_model || !r.provider_model) return jsonError(400, "route needs gateway_model and provider_model");
+      const api = apiColumn(r as unknown as Record<string, unknown>);
+      if (!api.ok) return jsonError(400, `route ${r.gateway_model}@${r.provider_model}: ${api.error}`);
       const priced = pricingColumn(r as unknown as Record<string, unknown>);
       if (!priced.ok) return jsonError(400, `route ${r.gateway_model}@${r.provider_model}: ${priced.error}`);
-      insRoute.run(r.gateway_model, providerId, r.provider_model, r.priority ?? 1, priced.value);
+      insRoute.run(r.gateway_model, providerId, r.provider_model, api.value, r.priority ?? 1, priced.value);
     }
     invalidate();
     return Response.json({ ok: true, id: providerId }, { status: id ? 200 : 201 });
@@ -439,12 +455,15 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     if (typeof input.provider_model !== "string" || !input.provider_model) return jsonError(400, "provider_model string required");
     if (!providerExists(input.provider_id as number)) return jsonError(404, "provider not found");
     if (input.priority !== undefined && typeof input.priority !== "number") return jsonError(400, "priority must be a number");
+    const api = apiColumn(input);
+    if (!api.ok) return jsonError(400, api.error);
     const priced = pricingColumn(input);
     if (!priced.ok) return jsonError(400, priced.error);
     insRoute.run(
       input.gateway_model,
       input.provider_id as number,
       input.provider_model,
+      api.value,
       (input.priority as number) ?? 1,
       priced.value
     );
@@ -485,6 +504,12 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
       if (typeof input.priority !== "number") return jsonError(400, "priority must be a number");
       sets.push("priority=?");
       vals.push(input.priority);
+    }
+    if (input.api !== undefined) {
+      const api = apiColumn(input);
+      if (!api.ok) return jsonError(400, api.error);
+      sets.push("api=?");
+      vals.push(api.value);
     }
     if (!sets.length) return jsonError(400, "no updatable fields in body");
     if (!db.query("SELECT 1 FROM routes WHERE gateway_model=? AND provider_id=? AND provider_model=?").get(gw, oldPid, pm))

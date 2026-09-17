@@ -1,7 +1,11 @@
 import type { Provider } from "./db";
+import { upstreamUrl, applyAuth } from "./dialect";
+import type { ApiDialect } from "./dialect";
 import { normalizeResponseBody, normalizeResponseChunk } from "./reasoning";
 import { normalizeUsage, computeCost, recordUsage } from "./billing";
 import type { NormalizedUsage } from "./billing";
+import { messagesToChat, messagesEventChunks, messagesUsageOf } from "./anthropic";
+import type { StreamState } from "./anthropic";
 import { logError } from "./tester";
 import type { Database } from "bun:sqlite";
 
@@ -9,6 +13,7 @@ export type RelayRequest = {
   db: Database;
   provider: Provider;
   route: Parameters<typeof computeCost>[0];
+  api?: ApiDialect;
   keyId: number | null;
   gatewayModel: string;
   body: string;
@@ -31,9 +36,9 @@ export function providerMeta(provider: Provider): ProviderMeta {
   return JSON.parse(provider.meta || "{}") as ProviderMeta;
 }
 
-function buildHeaders(provider: Provider, clientHeaders: Headers): Headers {
+function buildHeaders(provider: Provider, api: ApiDialect, clientHeaders: Headers): Headers {
   const h = new Headers();
-  h.set("Authorization", `Bearer ${provider.api_key}`);
+  applyAuth(h, provider, api);
   h.set("Content-Type", "application/json");
   const meta = providerMeta(provider);
   for (const [name, value] of Object.entries(meta.extra_headers ?? {})) {
@@ -47,7 +52,7 @@ function buildHeaders(provider: Provider, clientHeaders: Headers): Headers {
 }
 
 export async function relay(req: RelayRequest): Promise<Response> {
-  const url = `${req.provider.base_url.replace(/\/$/, "")}/v1/chat/completions`;
+  const url = upstreamUrl(req.provider, req.api ?? "chat");
   const idleMs = req.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
   const abort = new AbortController();
   const signal = req.signal ? AbortSignal.any([req.signal, abort.signal]) : abort.signal;
@@ -55,7 +60,7 @@ export async function relay(req: RelayRequest): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
-      headers: buildHeaders(req.provider, req.clientHeaders),
+      headers: buildHeaders(req.provider, req.api ?? "chat", req.clientHeaders),
       body: req.body,
       signal,
     });
@@ -86,6 +91,7 @@ export async function relayAndBill(req: RelayRequest, upstream: Response): Promi
   const isStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
   if (!isStream) {
     const text = normalizeResponseBody(await readBodyText(req, upstream.body!.getReader(), idleMs));
+    if (req.api === "messages") return messagesNonStream(req, text, upstream);
     billFromJson(req, text);
     return new Response(text, {
       status: upstream.status,
@@ -93,6 +99,18 @@ export async function relayAndBill(req: RelayRequest, upstream: Response): Promi
     });
   }
   return relayStream(req, upstream, idleMs);
+}
+
+function messagesNonStream(req: RelayRequest, text: string, upstream: Response): Response {
+  let msg: Record<string, unknown> = {};
+  try {
+    msg = JSON.parse(text) as Record<string, unknown>;
+  } catch {}
+  bill(req, msg.usage);
+  return new Response(JSON.stringify(messagesToChat(msg, req.gatewayModel)), {
+    status: upstream.status,
+    headers: new Headers({ "Content-Type": "application/json" }),
+  });
 }
 
 async function readBodyText(req: RelayRequest, reader: ReadableStreamDefaultReader<Uint8Array>, idleMs: number): Promise<string> {
@@ -159,10 +177,14 @@ export function bill(req: RelayRequest, usage: unknown): NormalizedUsage | null 
 async function relayStream(req: RelayRequest, upstream: Response, idleMs: number): Promise<Response> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
+  const isMessages = req.api === "messages";
+  const messagesState: StreamState = { stopReason: undefined, usage: undefined };
+  const chunkId = `${req.gatewayModel}-${Date.now().toString(36)}`;
   let captured = false;
   let bytesRead = 0;
   let interrupted: string | null = null;
   let sawDone = false;
+  let sawMessageStop = false;
   let aborted = false;
 
   const stream = new ReadableStream<Uint8Array>({
@@ -199,6 +221,20 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
               continue;
             }
             const obj = parsed as Record<string, unknown>;
+            if (isMessages) {
+              const usage = messagesUsageOf(obj);
+              if (usage != null) {
+                bill(req, usage);
+                captured = true;
+              }
+              if (obj.type === "message_stop") sawMessageStop = true;
+              if (obj.type === "ping") continue;
+              for (const frame of messagesEventChunks(obj, messagesState, req.gatewayModel, chunkId)) {
+                outLines.push(`data: ${JSON.stringify(frame)}`);
+              }
+              if (obj.type === "message_stop") outLines.push("data: [DONE]");
+              continue;
+            }
             if (obj.usage != null) {
               bill(req, obj.usage);
               captured = true;
@@ -216,8 +252,9 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
           void logError({ level: "warn", event: "client_aborted", provider: req.provider.name, model: req.gatewayModel, bytes_read: bytesRead });
           void reader.cancel().catch(() => {});
         } else {
-          if (interrupted === null && !sawDone) {
-            interrupted = "upstream closed without [DONE]";
+          const sawTerminal = isMessages ? sawMessageStop : sawDone;
+          if (interrupted === null && !sawTerminal) {
+            interrupted = isMessages ? "upstream closed without message_stop" : "upstream closed without [DONE]";
             void logInterrupted(req, new Error(interrupted), bytesRead);
           }
           if (interrupted !== null) {
