@@ -113,7 +113,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   pi.on("before_provider_headers", (event, ctx) => {
-    event.headers["x-opencode-session"] = ctx.sessionManager.getSessionId();
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (sessionId) event.headers["x-opencode-session"] = sessionId;
   });
 }
 ```
