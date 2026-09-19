@@ -41,25 +41,20 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
       });
     }
 
-    if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/responses")) {
-      return handleCompletion(req, keyRow.id, url.pathname === "/v1/responses");
+    if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      return handleCompletion(req, keyRow.id);
     }
 
     return jsonError(404, "not found");
   }
 
-  async function handleCompletion(req: Request, keyId: number, responsesApi: boolean): Promise<Response> {
+  async function handleCompletion(req: Request, keyId: number): Promise<Response> {
     let body: string;
     try {
       body = await req.text();
     } catch {
       return jsonError(400, "invalid body");
     }
-    if (responsesApi) {
-      body = await convertResponsesToChat(body);
-      if (body === null) return jsonError(400, "invalid responses payload");
-    }
-
     const parsed = JSON.parse(body) as { model?: string; stream?: boolean };
     const gatewayModel = parsed.model;
     if (!gatewayModel) return jsonError(400, "model is required");
@@ -100,7 +95,6 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
             { db, provider: candidate.provider, route, api, keyId, gatewayModel, body: upstreamBody, clientHeaders: req.headers, startedAt: started },
             upstream
           );
-          if (responsesApi && out.body) return convertChatToResponseStreamOrJson(out, gatewayModel);
           return out;
         }
         const cls = classifyError(upstream.status);
@@ -138,16 +132,6 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
       return jsonError(404, "not found");
     },
   };
-}
-
-async function convertResponsesToChat(body: string): Promise<string | null> {
-  const { convertRequest } = await import("./responses");
-  return convertRequest(body);
-}
-
-async function convertChatToResponseStreamOrJson(resp: Response, gatewayModel: string): Promise<Response> {
-  const { convertResponse } = await import("./responses");
-  return convertResponse(resp, gatewayModel);
 }
 
 function jsonError(status: number, message: string): Response {
