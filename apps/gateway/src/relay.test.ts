@@ -242,6 +242,7 @@ describe("relay", () => {
     const out = await relayAndBill(req, await relay(req));
     const text = await out.text();
     expect(text).toContain("upstream closed without [DONE]");
+    expect(text).toContain("(stream terminated)");
     expect(text).not.toContain("data: [DONE]");
     await Bun.sleep(100);
     const log = readFileSync(join(dir, `error-${new Date().toISOString().slice(0, 10)}.log`), "utf8");

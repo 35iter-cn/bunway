@@ -265,7 +265,7 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
           if (interrupted !== null) {
             const chunk = {
               error: {
-                message: `upstream interrupted after ${bytesRead} bytes: ${interrupted}`,
+                message: `upstream interrupted after ${bytesRead} bytes: ${interrupted} (stream terminated)`,
                 type: "upstream_interrupted",
                 code: "upstream_interrupted",
               },
