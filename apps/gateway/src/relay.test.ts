@@ -469,3 +469,153 @@ describe("latency recording", () => {
     expect(row.ts).toBe(startedAt);
   });
 });
+
+describe("malformed SSE guard", () => {
+  function readLog(dir: string): string {
+    return readFileSync(join(dir, `error-${new Date().toISOString().slice(0, 10)}.log`), "utf8");
+  }
+
+  test("chat: malformed data line dropped, later valid lines still forwarded", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {"choices":[{"delta":{"co` + "\n\n" +
+            `data: {"id":"1","choices":[{"delta":{"content":"ok"},"index":0}]}\n\n` +
+            `data: [DONE]\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).not.toContain('"delta":{"co\n');
+    expect(text.split("\n").some((l) => l.startsWith("data:") && l.trim() !== "data: [DONE]" && (() => { try { JSON.parse(l.slice(5)); return false; } catch { return true; } })())).toBe(false);
+    expect(text).toContain('"content":"ok"');
+    expect(text).toContain("[DONE]");
+  });
+
+  test("chat: truncated tail line dropped, interrupted error chunk follows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-log-"));
+    process.env.LOG_DIR = dir;
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {"id":"1","choices":[{"delta":{"content":"he"},"index":0}]}\n\n` +
+            `data: {"choices":[{"delta":{"co`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain("upstream closed without [DONE]");
+    expect(text).toContain("(stream terminated)");
+    expect(text).not.toContain('data: {"choices":[{"delta":{"co');
+    await Bun.sleep(100);
+    const log = readLog(dir);
+    expect(log).toContain("upstream_malformed_sse");
+    const entry = JSON.parse(log.trim().split("\n").find((l) => l.includes("upstream_malformed_sse"))!);
+    expect(entry.where).toBe("tail");
+    expect(entry.malformed_sse_count).toBe(1);
+    expect(entry.raw_len).toBe(`data: {"choices":[{"delta":{"co`.length);
+    expect(entry.sample.startsWith("data: ")).toBe(true);
+    expect(entry.sample.length).toBeLessThanOrEqual(120);
+  });
+
+  test("chat: multiple malformed lines collapse to one event with count, sample from first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-log-"));
+    process.env.LOG_DIR = dir;
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `data: {broken-one` + "\n\n" +
+            `data: {broken-two-longer-line-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` + "\n\n" +
+            `data: {"id":"1","choices":[{"delta":{"content":"ok"},"index":0}]}\n\n` +
+            `data: [DONE]\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    expect(await out.text()).toContain('"content":"ok"');
+    await Bun.sleep(100);
+    const entries = readLog(dir).trim().split("\n").filter((l) => l.includes("upstream_malformed_sse"));
+    expect(entries.length).toBe(1);
+    const entry = JSON.parse(entries[0]);
+    expect(entry.malformed_sse_count).toBe(2);
+    expect(entry.where).toBe("line");
+    expect(entry.sample).toContain("broken-one");
+    expect(entry.sample.length).toBeLessThanOrEqual(120);
+  });
+
+  test("chat: comments and blank lines still pass through (regression)", async () => {
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `: keep-alive\n\n` +
+            `data: {"id":"1","choices":[{"delta":{"content":"ok"},"index":0}]}\n\n` +
+            `data: [DONE]\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain(": keep-alive");
+    expect(text).toContain('"content":"ok"');
+  });
+
+  test("messages: malformed data line dropped, stream continues", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-log-"));
+    process.env.LOG_DIR = dir;
+    const base = mockUpstream(
+      () =>
+        new Response(
+          `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hey"` + "\n\n" +
+            `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hey2"}}\n\n` +
+            `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    req.api = "messages";
+    req.body = JSON.stringify({ model: "m-up", messages: [{ role: "user", content: "hi" }], max_tokens: 8192 });
+    const out = await relayAndBill(req, await relay(req));
+    const text = await out.text();
+    expect(text).toContain('"content":"hey2"');
+    expect(text).toContain("[DONE]");
+    await Bun.sleep(100);
+    const log = readLog(dir);
+    expect(log).toContain("upstream_malformed_sse");
+  });
+
+  test("client aborted: malformed event still logged", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-log-"));
+    process.env.LOG_DIR = dir;
+    const base = mockUpstream(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`data: {broken` + "\n\n"));
+              controller.enqueue(
+                new TextEncoder().encode(`data: {"id":"1","choices":[{"delta":{"content":"he"},"index":0}]}\n\n`)
+              );
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    );
+    const { req } = setup(base);
+    req.body = JSON.stringify({ model: "m-up", messages: [{ role: "user", content: "hi" }], stream: true });
+    req.idleTimeoutMs = 50;
+    const upstream = await relayAndBill(req, await relay(req));
+    const bodyReader = upstream.body!.getReader();
+    await bodyReader.read();
+    await bodyReader.cancel();
+    await Bun.sleep(300);
+    const log = readLog(dir);
+    expect(log).toContain("upstream_malformed_sse");
+    expect(log).toContain("client_aborted");
+  });
+});
