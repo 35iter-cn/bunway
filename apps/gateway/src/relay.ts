@@ -192,6 +192,8 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
     async start(controller) {
       const reader = upstream.body!.getReader();
       let pending = "";
+      let malformedCount = 0;
+      let malformedSample: { where: "line" | "tail"; raw_len: number; sample: string } | null = null;
       try {
         while (!aborted) {
           let done: boolean;
@@ -216,6 +218,11 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
         const outLines: string[] = [];
           for (const line of lines) {
             if (line.trim() === "data: [DONE]") sawDone = true;
+            if (isMalformedDataLine(line)) {
+              malformedCount++;
+              malformedSample ??= { where: "line", raw_len: line.length, sample: line.slice(0, 120) };
+              continue;
+            }
             const parsed = parseSseData(line);
             if (parsed === null) {
               if (!isMessages) outLines.push(line);
@@ -250,9 +257,27 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
         }
         if (pending) {
           if (pending.trim() === "data: [DONE]") sawDone = true;
-          controller.enqueue(encoder.encode(pending));
+          if (isMalformedDataLine(pending)) {
+            malformedCount++;
+            malformedSample ??= { where: "tail", raw_len: pending.length, sample: pending.slice(0, 120) };
+          } else {
+            controller.enqueue(encoder.encode(pending));
+          }
         }
       } finally {
+        if (malformedCount > 0 && malformedSample) {
+          void logError({
+            level: "warn",
+            event: "upstream_malformed_sse",
+            provider: req.provider.name,
+            model: req.gatewayModel,
+            bytes_read: bytesRead,
+            malformed_sse_count: malformedCount,
+            where: malformedSample.where,
+            raw_len: malformedSample.raw_len,
+            sample: malformedSample.sample,
+          });
+        }
         if (aborted) {
           void logError({ level: "warn", event: "client_aborted", provider: req.provider.name, model: req.gatewayModel, bytes_read: bytesRead });
           void reader.cancel().catch(() => {});
@@ -299,6 +324,18 @@ function parseSseData(line: string): unknown | null {
     return JSON.parse(payload);
   } catch {
     return null;
+  }
+}
+
+export function isMalformedDataLine(line: string): boolean {
+  if (!line.startsWith("data:")) return false;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return false;
+  try {
+    JSON.parse(payload);
+    return false;
+  } catch {
+    return true;
   }
 }
 
