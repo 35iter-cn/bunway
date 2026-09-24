@@ -237,11 +237,10 @@
 
   async function onDragStop(e) {
     const d = e?.detail ?? e;
-    window.__lastDragStop = JSON.stringify(Object.keys(d ?? {})) + " tgt:" + !!d?.targetNode + " nodes:" + (d?.nodes?.length ?? -1);
-    const node = d?.targetNode;
+    const node = d?.targetNode ?? d?.node;
     if (!node?.data?.row || node.data.row.length < 2) return;
-    const all = d?.nodes?.length ? d.nodes : nodes;
-    const xOf = new Map(all.map((n) => [n.id, n.position?.x ?? 0]));
+    const xOf = new Map();
+    for (const el of document.querySelectorAll(".svelte-flow__node")) xOf.set(el.dataset.id, el.getBoundingClientRect().left);
     const ordered = [...node.data.row].sort((a, b) => (xOf.get(rk(a)) ?? 0) - (xOf.get(rk(b)) ?? 0));
     if (ordered.every((c, i) => c === node.data.row[i])) return build();
     const n = ordered.length;
