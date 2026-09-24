@@ -224,7 +224,7 @@
   }
 
   $effect(() => {
-    const key = JSON.stringify([layout.rows.map((r) => r.map(rk)), providers.map((p) => [p.id, p.enabled, p.unavailable, unitsOf(p).map((u) => [u.gateway_model, u.unavailable, u.cooldown_until])]), computedAt]);
+    const key = JSON.stringify([layout.rows.map((r) => r.map(rk)), providers.map((p) => [p.id, p.enabled, p.unavailable, unitsOf(p).map((u) => [u.gateway_model, u.unavailable, u.cooldown_until > now])]), computedAt]);
     if (key === layoutKey) return;
     layoutKey = key;
     build();

@@ -46,6 +46,7 @@ export class Router {
   }
 
   reload(): void {
+    const prev = new Map(this.units.map((u) => [`${u.provider.id}|${u.gatewayModel}`, u] as const));
     this.orderTs = 0;
     const providers = this.db.query<Provider, []>("SELECT * FROM providers WHERE enabled=1").all();
     const routes = this.db
@@ -71,8 +72,8 @@ export class Router {
           provider,
           gatewayModel: route.gateway_model,
           route,
-          unavailable: false,
-          cooldownUntil: 0,
+          unavailable: prev.get(`${p.id}|${route.gateway_model}`)?.unavailable ?? false,
+          cooldownUntil: prev.get(`${p.id}|${route.gateway_model}`)?.cooldownUntil ?? 0,
         });
       }
     }

@@ -89,6 +89,15 @@ describe("Router.pick", () => {
     expect(after.map((p) => p.provider.name)).toEqual(["last"]);
   });
 
+  test("reload preserves unit runtime state", () => {
+    const { router } = setup();
+    const picked = router.pick("glm");
+    router.markResult("glm", picked[0].provider.id, "unavailable");
+    router.markResult("glm", picked[1].provider.id, "cooldown");
+    router.reload();
+    expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["last"]);
+  });
+
   test("cooldown expires → back in pool", () => {
     const { router } = setup();
     const [primary] = router.pick("glm");
