@@ -82,11 +82,11 @@
     }
   };
   const rankOf = (c) => entryOf(c)?.rank ?? c.priority;
-  const selOrder = (g) => [...g.cands].sort((a, b) => rankOf(a) - rankOf(b));
+  const selOrder = (g) => [...g.cands].sort((a, b) => b.priority - a.priority);
   const activeId = (g) => {
-    const sel = selOrder(g);
-    const at = sel.findIndex((c) => unitStateOf(provOf(c.provider_id), g.model) === "ok");
-    return at < 0 ? null : sel[at].provider_id;
+    const ok = selOrder(g).filter((c) => unitStateOf(provOf(c.provider_id), g.model) === "ok");
+    if (!ok.length) return null;
+    return [...ok].sort((a, b) => rankOf(a) - rankOf(b) || b.priority - a.priority)[0].provider_id;
   };
 
   async function toggleDynamic(e) {
@@ -298,7 +298,7 @@
 
 <div class="flow-wrap" bind:this={wrapEl} onclick={wrapClick}>
 <div class="flow-canvas">
-  <SvelteFlow bind:this={flow} {nodes} {edges} nodeTypes={{ route: RouteNode }} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.4} maxZoom={1.6} panOnDrag nodesDraggable onnodedragstart={onDragStart} onnodedragstop={onDragStop} preventScrolling={false} proOptions={{ hideAttribution: true }}>
+  <SvelteFlow bind:this={flow} {nodes} {edges} nodeTypes={{ route: RouteNode }} fitView fitViewOptions={{ padding: { left: 0.03, right: 0.12, top: 0.1, bottom: 0.1 } }} minZoom={0.4} maxZoom={1.6} panOnDrag nodesDraggable onnodedragstart={onDragStart} onnodedragstop={onDragStop} preventScrolling={false} proOptions={{ hideAttribution: true }}>
     <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
   </SvelteFlow>
   {#if saveErr}<div class="rt-err">{saveErr.msg} (server values restored)</div>{/if}
