@@ -220,7 +220,6 @@
         }
       });
       nodes = nodes.map((n) => (xOf.has(n.id) ? { ...n, position: { ...n.position, x: xOf.get(n.id) } } : n));
-      flow?.fitView({ padding: 0.12, duration: 200 });
     });
   }
 
