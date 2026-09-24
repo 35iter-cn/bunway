@@ -9,6 +9,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@xyflow/svelte": "^1.6.6",
     "uplot": "^1.6.32"
   },
   "devDependencies": {

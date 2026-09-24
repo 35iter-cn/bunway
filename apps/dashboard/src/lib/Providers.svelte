@@ -1,23 +1,39 @@
 <script>
-  import { localHM, dayMark, dayList, localWindow, windowLabel, offsetLabel } from "./fmt.js";
+  import { SvelteFlow, Background, BackgroundVariant, MarkerType } from "@xyflow/svelte";
+  import "@xyflow/svelte/dist/style.css";
+  import RouteNode from "./RouteNode.svelte";
+  import { localHM, localWindow, windowLabel, offsetLabel, dayMark, dayList } from "./fmt.js";
 
   let { providers = [], routes = [], pricing = [], settings = [], computedAt = 0, token = "", onreload = () => {} } = $props();
 
-  let pending = $state(null);
-  let dragKey = $state(null);
-  let dragModel = $state(null);
-  let overKey = $state(null);
   let saveErr = $state(null);
   let dynErr = $state("");
+  let pop = $state(null);
+  let wrapEl;
+  const AMBER = "#f2a83b";
+
+  const badgeOf = (st) => (st === "dead" ? "Unavailable" : st === "cool" ? "Cooling" : st === "off" ? "Disabled" : "OK");
+  function showPop(d, e) {
+    if (!wrapEl) return;
+    if (pop?.d === d) return (pop = null);
+    const r = e.currentTarget.getBoundingClientRect();
+    const w = wrapEl.getBoundingClientRect();
+    const x = r.left - w.left;
+    pop = { d, x, y: r.bottom - w.top + 8, flip: x + 430 > w.width };
+  }
+  function wrapClick(e) {
+    if (!e.target.closest(".node-card") && !e.target.closest(".flow-pop")) pop = null;
+  }
 
   const PALETTE = ["var(--blue)", "var(--green)", "var(--amber)"];
-  const STATE_TEXT = { ok: "OK", cool: "Cooling", dead: "Unavailable", off: "Disabled" };
+  const COL_W = 320;
+  const ROW_H = 120;
 
   let now = $state(Date.now());
+  let flow;
 
   const cfg = $derived(Object.fromEntries(settings.map((s) => [s.key, s.value])));
-  const cooldownMin = $derived(cfg.cooldown_minutes_5xx ?? "5");
-  const probeMin = $derived(cfg.test_interval_minutes ?? "60");
+  const dynamicOn = $derived(cfg.dynamic_priority === "1");
 
   const groups = $derived.by(() => {
     const by = new Map();
@@ -31,21 +47,12 @@
   });
 
   const usd = (n, digits = 2) => "$" + Number(n ?? 0).toFixed(digits);
-  const tzOffset = -new Date().getTimezoneOffset();
-  const dur = (ms) => {
-    const m = Math.max(0, Math.round(ms / 60000));
-    return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m` : `${m}m`;
-  };
   const rk = (c) => `${c.provider_id}|${c.gateway_model}|${c.provider_model}`;
   const entryOf = (c) => pricing.find((e) => rk(e) === rk(c));
   const pricesOf = (c) => entryOf(c)?.now.prices ?? c.pricing?.default ?? {};
   const ruleOf = (c) => entryOf(c)?.now.rule ?? -1;
   const nextOf = (c) => entryOf(c)?.next_switch ?? null;
   const tierLabel = (rule) => (rule < 0 ? "Default" : `Rule ${"①②③④⑤"[rule] ?? rule + 1}`);
-  const tiersOf = (c) => [
-    { rule: -1, prices: c.pricing?.default ?? {} },
-    ...(c.pricing?.rules ?? []).map((r, i) => ({ rule: i, prices: { ...c.pricing.default, ...r } })),
-  ];
   const tierMark = (c, rule) => {
     if (rule === ruleOf(c)) return "current";
     const next = nextOf(c);
@@ -56,10 +63,15 @@
     return `${dayList(w.days, localWindow(w.windows[0]).dayShift)}${w.windows.map(windowLabel).join(" · ")}`;
   };
   const provOf = (id) => providers.find((p) => p.id === id);
-  const stateOf = (p) => (!p ? "ok" : p.enabled === 0 ? "off" : p.unavailable ? "dead" : p.cooldown_until > now ? "cool" : "ok");
   const unitsOf = (p) => (Array.isArray(p?.units) ? p.units : []);
-  const unitState = (u) => (u.unavailable ? "dead" : u.cooldown_until > now ? "cool" : "ok");
-  const unitLeft = (u) => Math.max(0, Math.ceil((u.cooldown_until - now) / 1000));
+  const unitOf = (p, m) => unitsOf(p).find((u) => u.gateway_model === m);
+  const unitStateOf = (p, m) => {
+    if (!p) return "ok";
+    if (p.enabled === 0) return "off";
+    const u = unitOf(p, m);
+    if (!u) return p.unavailable ? "dead" : p.cooldown_until > now ? "cool" : "ok";
+    return u.unavailable ? "dead" : u.cooldown_until > now ? "cool" : "ok";
+  };
   const color = (id) => PALETTE[Math.max(0, providers.findIndex((p) => p.id === id)) % PALETTE.length];
   const routesOf = (id) => routes.filter((r) => r.provider_id === id);
   const fwd = (p) => {
@@ -69,14 +81,11 @@
       return [];
     }
   };
-  const left = (p) => Math.max(0, Math.ceil((p.cooldown_until - now) / 1000));
-  const effective = (cands) => cands.findIndex((c) => stateOf(provOf(c.provider_id)) === "ok");
-  const dynamicOn = $derived(cfg.dynamic_priority === "1");
   const rankOf = (c) => entryOf(c)?.rank ?? c.priority;
   const selOrder = (g) => [...g.cands].sort((a, b) => rankOf(a) - rankOf(b));
   const activeId = (g) => {
     const sel = selOrder(g);
-    const at = effective(sel);
+    const at = sel.findIndex((c) => unitStateOf(provOf(c.provider_id), g.model) === "ok");
     return at < 0 ? null : sel[at].provider_id;
   };
 
@@ -97,49 +106,148 @@
     }
   }
 
-  const ordered = (g) =>
-    pending?.model === g.model ? pending.order.map((k) => g.cands.find((c) => rk(c) === k)).filter(Boolean) : g.cands;
-
-  function dragStart(g, c) {
-    if (g.cands.length < 2) return;
-    dragKey = rk(c);
-    dragModel = g.model;
-  }
-
-  function dragOver(e, g, c) {
-    if (dragModel !== g.model) return;
-    e.preventDefault();
-    overKey = rk(c);
-  }
-
-  function dragEnd() {
-    dragKey = null;
-    dragModel = null;
-    overKey = null;
-  }
-
-  function drop(g, target) {
-    const list = ordered(g);
-    const from = list.findIndex((c) => rk(c) === dragKey);
-    dragEnd();
-    if (from < 0 || from === target) return;
-    const order = list.map(rk);
-    order.splice(target, 0, order.splice(from, 1)[0]);
-    const moved = list[from];
-    pending = {
-      model: g.model,
-      order,
-      label: `${g.model}: ${moved.provider_name ?? moved.provider_id} #${from + 1} → #${target + 1}`,
+  const nodeData = (c, i, active) => {
+    const p = provOf(c.provider_id);
+    const rule = ruleOf(c);
+    return {
+      name: c.provider_name ?? c.provider_id,
+      pid: c.provider_id,
+      baseUrl: p?.base_url ?? "?",
+      providerModel: c.provider_model,
+      prio: c.priority,
+      i,
+      price: `${usd(pricesOf(c).price_input)}/${usd(pricesOf(c).price_output)}`,
+      rule: rule >= 0,
+      st: unitStateOf(p, c.gateway_model),
+      coolUntil: unitOf(p, c.gateway_model)?.cooldown_until ?? 0,
+      active,
+      nextTs: nextOf(c)?.ts ?? 0,
+      color: color(c.provider_id),
+      fwd: fwd(p),
+      routesOn: routesOf(c.provider_id).length,
+      tzNote: offsetLabel(),
+      tiers: [
+        { rule: -1, label: tierLabel(-1), mark: tierMark(c, -1), prices: c.pricing?.default ?? {}, cur: rule === -1, win: "" },
+        ...(c.pricing?.rules ?? []).map((r, ri) => ({
+          rule: ri,
+          label: tierLabel(ri),
+          mark: tierMark(c, ri),
+          prices: { ...c.pricing.default, ...r },
+          cur: rule === ri,
+          win: tierWindow(c, ri),
+        })),
+      ].map((t) => ({
+        rule: t.rule,
+        label: t.label,
+        mark: t.mark,
+        cur: t.cur,
+        win: t.win,
+        pin: usd(t.prices.price_input, 3),
+        pout: usd(t.prices.price_output, 3),
+        pcr: usd(t.prices.price_cache_read, 3),
+        pcw: usd(t.prices.price_cache_write, 3),
+      })),
+      onpop: showPop,
     };
+  };
+
+  const layout = $derived.by(() => {
+    const rows = groups.map((g) => selOrder(g));
+    return { rows, groups };
+  });
+
+  let nodes = $state.raw([]);
+  let edges = $state.raw([]);
+  let layoutKey = "";
+
+  function build() {
+    const ns = [];
+    const es = [];
+    layout.rows.forEach((row, r) => {
+      const active = layout.groups[r].cands.length ? activeId(layout.groups[r]) : null;
+      const allDead = row.every((c) => unitStateOf(provOf(c.provider_id), layout.groups[r].model) !== "ok");
+      ns.push({
+          id: `m:${layout.groups[r].model}`,
+          type: "route",
+          position: { x: -180, y: r * ROW_H },
+          draggable: false,
+          selectable: false,
+          connectable: false,
+          data: { labelMode: true, name: layout.groups[r].model, st: "ok", color: "var(--faint)", tiers: [], fwd: [], coolUntil: 0, nextTs: 0, price: "", sub: `${layout.groups[r].cands.length} candidate${layout.groups[r].cands.length === 1 ? "" : "s"}${allDead ? " · all unavailable → 502" : ""}`, allDead },
+        });
+      row.forEach((c, i) => {
+        ns.push({
+          id: rk(c),
+          type: "route",
+          position: { x: i * COL_W, y: r * ROW_H },
+          draggable: row.length > 1,
+          data: { ...nodeData(c, i, active === c.provider_id), row, allDead },
+        });
+      });
+      const firstLive = active === row[0].provider_id;
+      es.push({
+        id: `m:${layout.groups[r].model}->${rk(row[0])}`,
+        source: `m:${layout.groups[r].model}`,
+        target: rk(row[0]),
+        type: "straight",
+        ...(firstLive ? { markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: AMBER } } : {}),
+        animated: firstLive,
+        class: firstLive ? "edge-live" : "edge-dim",
+      });
+      for (let i = 0; i < row.length - 1; i++) {
+        const live = active === row[i + 1].provider_id;
+        es.push({
+          id: `${rk(row[i])}->${rk(row[i + 1])}`,
+          source: rk(row[i]),
+          target: rk(row[i + 1]),
+          type: "straight",
+          ...(live ? { markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: AMBER } } : {}),
+          animated: live,
+          class: live ? "edge-live" : "edge-dim",
+        });
+      }
+    });
+    nodes = ns;
+    edges = es;
+    requestAnimationFrame(() => {
+      const el = (id) => document.querySelector(`.svelte-flow__node[data-id="${CSS.escape(id)}"]`);
+      const xOf = new Map();
+      layout.rows.forEach((row, r) => {
+        let x = -180 + (el(`m:${layout.groups[r].model}`)?.offsetWidth ?? 140) + 48;
+        for (const c of row) {
+          xOf.set(rk(c), x);
+          x += (el(rk(c))?.offsetWidth ?? COL_W) + 48;
+        }
+      });
+      nodes = nodes.map((n) => (xOf.has(n.id) ? { ...n, position: { ...n.position, x: xOf.get(n.id) } } : n));
+      flow?.fitView({ padding: 0.12, duration: 200 });
+    });
   }
 
-  const cancel = () => (pending = null);
+  $effect(() => {
+    const key = JSON.stringify([layout.rows.map((r) => r.map(rk)), providers.map((p) => [p.id, p.enabled, p.unavailable, unitsOf(p).map((u) => [u.gateway_model, u.unavailable, u.cooldown_until])]), computedAt]);
+    if (key === layoutKey) return;
+    layoutKey = key;
+    build();
+  });
 
-  async function commit(g) {
-    const list = ordered(g);
-    const n = list.length;
+  function onDragStart(e) {
     saveErr = null;
-    for (const [i, c] of list.entries()) {
+    pop = null;
+  }
+
+  async function onDragStop(e) {
+    const d = e?.detail ?? e;
+    window.__lastDragStop = JSON.stringify(Object.keys(d ?? {})) + " tgt:" + !!d?.targetNode + " nodes:" + (d?.nodes?.length ?? -1);
+    const node = d?.targetNode;
+    if (!node?.data?.row || node.data.row.length < 2) return;
+    const all = d?.nodes?.length ? d.nodes : nodes;
+    const xOf = new Map(all.map((n) => [n.id, n.position?.x ?? 0]));
+    const ordered = [...node.data.row].sort((a, b) => (xOf.get(rk(a)) ?? 0) - (xOf.get(rk(b)) ?? 0));
+    if (ordered.every((c, i) => c === node.data.row[i])) return build();
+    const n = ordered.length;
+    saveErr = null;
+    for (const [i, c] of ordered.entries()) {
       const priority = (n - i) * 5;
       if (priority === c.priority) continue;
       const q = new URLSearchParams({
@@ -154,26 +262,23 @@
           body: JSON.stringify({ priority }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } catch (e) {
-        saveErr = { model: g.model, msg: `${c.provider_name ?? c.provider_id} priority write failed: ${e.message}` };
+      } catch (ex) {
+        saveErr = { msg: `${c.provider_name ?? c.provider_id} priority write failed: ${ex.message}` };
         break;
       }
     }
-    try {
-      await onreload();
-    } finally {
-      pending = null;
-    }
+    await onreload();
+    build();
   }
 
-  const summary = $derived.by(() => {
+  const unitSummary = $derived.by(() => {
     const c = { ok: 0, cool: 0, dead: 0, off: 0 };
-    for (const p of providers) c[stateOf(p)]++;
+    for (const g of groups) for (const cand of g.cands) c[unitStateOf(provOf(cand.provider_id), g.model)]++;
     return c;
   });
 
   $effect(() => {
-    if (!providers.some((p) => p.cooldown_until > now) && !pricing.some((e) => e.next_switch)) return;
+    if (!providers.some((p) => p.cooldown_until > now) && !providers.some((p) => unitsOf(p).some((u) => u.cooldown_until > now)) && !pricing.some((e) => e.next_switch)) return;
     const iv = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(iv);
   });
@@ -187,99 +292,39 @@
   <span class="dyn-state">
     {#if dynamicOn}on · cheapest provider serves · computed {computedAt ? localHM(computedAt) : "-"}{:else}off · stored priority order{/if}
   </span>
+  <span class="unit-sum">
+    ok {unitSummary.ok} · cooling {unitSummary.cool} · unavailable {unitSummary.dead} · disabled {unitSummary.off}
+  </span>
   {#if dynErr}<span class="rt-err">{dynErr}</span>{/if}
 </div>
 
-{#each groups as g (g.model)}
-  {@const act = activeId(g)}
-  <div class="rt-row">
-    <span class="gm">
-      {g.model}
-      <small>
-        {g.cands.length} candidates{#if act === null}<span class="bad-cap"> · all unavailable → 502</span>{/if}
-      </small>
-    </span>
-    <div class="chain" role="list">
-      {#each ordered(g) as c, i (rk(c))}
-        {@const p = provOf(c.provider_id)}
-        {@const st = stateOf(p)}
-        {@const price = pricesOf(c)}
-        {@const rule = ruleOf(c)}
-        {@const next = nextOf(c)}
-        <span class={i === 0 ? "entry" : "conn"} class:live={act === c.provider_id}></span>
-        <span
-          class="node"
-          role="listitem"
-          class:eff={act === c.provider_id}
-          class:st-cool={st === "cool"}
-          class:st-dead={st === "dead"}
-          class:st-off={st === "off"}
-          class:drag={dragKey === rk(c)}
-          class:over={overKey === rk(c)}
-          style="--pc:{color(c.provider_id)}"
-          draggable={g.cands.length > 1}
-          ondragstart={() => dragStart(g, c)}
-          ondragover={(e) => dragOver(e, g, c)}
-          ondrop={(e) => {
-            e.preventDefault();
-            drop(g, i);
-          }}
-          ondragend={dragEnd}
-        >
-          <span class="node-card">
-            <b>{c.provider_name ?? p?.name ?? c.provider_id}</b>
-            <small class="price" class:rule={rule >= 0}>{usd(price.price_input)}/{usd(price.price_output)}</small>
-            {#if st !== "ok"}<span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span>{/if}
-            {#if act === c.provider_id && next}<span class="countdown">→{localHM(next.ts)} {dur(next.ts - now)}</span>{/if}
-          </span>
-          <div class="pop">
-            <div class="ph"><span class="nm">{p?.name ?? c.provider_id}</span><small style="color:var(--faint)">#{c.provider_id}</small><span class="st {st}">{STATE_TEXT[st]}{#if st === "cool"} · {left(p)}s left{/if}</span></div>
-            <div class="pu">{p?.base_url ?? "?"}</div>
-            {#if unitsOf(p).length > 1}
-              <table><tbody>
-                {#each unitsOf(p) as u (u.gateway_model)}
-                  <tr>
-                    <td>{u.gateway_model}</td>
-                    <td>
-                      {#if unitState(u) === "dead"}<span class="st dead">Unavailable</span>
-                      {:else if unitState(u) === "cool"}<span class="st cool">Cooling · {unitLeft(u)}s left</span>
-                      {:else}<span class="st ok">OK</span>{/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody></table>
-            {/if}
-            <table><tbody>
-              <tr><td>provider_model</td><td>{c.provider_model}</td></tr>
-              <tr><td>priority / order</td><td>{c.priority} / #{i + 1}</td></tr>
-              {#each tiersOf(c) as t (t.rule)}
-                <tr class:cur={t.rule === ruleOf(c)}>
-                  <td>{tierLabel(t.rule)}{#if tierMark(c, t.rule)}（{tierMark(c, t.rule)}）{/if}</td>
-                  <td>in {usd(t.prices.price_input, 3)} · out {usd(t.prices.price_output, 3)}<br />
-                    <span class="note">cache rd {usd(t.prices.price_cache_read, 3)} · cache wr {usd(t.prices.price_cache_write, 3)}</span></td>
-                </tr>
-                {#if t.rule >= 0}<tr class="w"><td colspan="2" class="win">{tierWindow(c, t.rule)}</td></tr>{/if}
-              {/each}
-              {#if fwd(p).length}<tr><td>forward headers</td><td class="fw">{fwd(p).join(" · ")}</td></tr>{/if}
-              <tr><td>routes on provider</td><td>{routesOf(c.provider_id).length}</td></tr>
-            </tbody></table>
-            <div class="foot">unit price per 1M tokens · live status{#if tzOffset !== 0} · windows defined in UTC, shown in {offsetLabel()}{/if}</div>
-          </div>
-        </span>
+<div class="flow-wrap" bind:this={wrapEl} onclick={wrapClick}>
+<div class="flow-canvas">
+  <SvelteFlow bind:this={flow} {nodes} {edges} nodeTypes={{ route: RouteNode }} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.4} maxZoom={1.6} panOnDrag nodesDraggable onnodedragstart={onDragStart} onnodedragstop={onDragStop} preventScrolling={false} proOptions={{ hideAttribution: true }}>
+    <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
+  </SvelteFlow>
+  {#if saveErr}<div class="rt-err">{saveErr.msg} (server values restored)</div>{/if}
+</div>
+{#if pop}
+  {@const d = pop.d}
+  <div class="pop flow-pop" style="{pop.flip ? "right:8px" : `left:${pop.x}px`};top:{pop.y}px">
+    <div class="ph"><span class="nm">{d.name}</span><small style="color:var(--faint)">#{d.pid}</small><span class="st {d.st}">{badgeOf(d.st)}</span></div>
+    <div class="pu">{d.baseUrl}</div>
+    <table><tbody>
+      <tr><td>provider_model</td><td>{d.providerModel}</td></tr>
+      <tr><td>priority / order</td><td>{d.prio} / #{d.i + 1}</td></tr>
+      {#each d.tiers as t (t.rule)}
+        <tr class:cur={t.cur}>
+          <td>{t.label}{#if t.mark}（{t.mark}）{/if}</td>
+          <td>in {t.pin} · out {t.pout}<br />
+            <span class="note">cache rd {t.pcr} · cache wr {t.pcw}</span></td>
+        </tr>
+        {#if t.win}<tr class="w"><td colspan="2" class="win">{t.win}</td></tr>{/if}
       {/each}
-      {#if g.cands.length === 1}
-        <span class="conn"></span>
-        <span class="empty-slot">no fallback</span>
-      {/if}
-      {#if act === null}<span class="bad-cap" style="margin-left:10px">→ all unavailable · 502</span>{/if}
-    </div>
-    {#if pending?.model === g.model}
-      <div class="pending">
-        <span>{pending.label}</span>
-        <button class="on" onclick={() => commit(g)}>Confirm</button>
-        <button onclick={cancel}>Cancel</button>
-      </div>
-    {/if}
-    {#if saveErr?.model === g.model}<div class="rt-err">{saveErr.msg} (server values restored)</div>{/if}
+      {#if d.fwd.length}<tr><td>forward headers</td><td class="fw">{d.fwd.join(" · ")}</td></tr>{/if}
+      <tr><td>routes on provider</td><td>{d.routesOn}</td></tr>
+    </tbody></table>
+    <div class="foot">unit price per 1M tokens · live status{#if d.tzNote} · windows defined in UTC, shown in {d.tzNote}{/if}</div>
   </div>
-{/each}
+{/if}
+</div>
