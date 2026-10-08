@@ -36,7 +36,7 @@ export function providerMeta(provider: Provider): ProviderMeta {
   return JSON.parse(provider.meta || "{}") as ProviderMeta;
 }
 
-function buildHeaders(provider: Provider, api: ApiDialect, clientHeaders: Headers): Headers {
+export function buildHeaders(provider: Provider, api: ApiDialect, clientHeaders: Headers): Headers {
   const h = new Headers();
   applyAuth(h, provider, api);
   h.set("Content-Type", "application/json");

@@ -1,12 +1,15 @@
 import type { Database } from "bun:sqlite";
 import type { Router, UnitRuntime } from "./router";
-import { upstreamUrl, applyAuth } from "./dialect";
+import { upstreamUrl } from "./dialect";
 import type { ApiDialect } from "./dialect";
+import { buildHeaders } from "./relay";
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 
 const logDir = (): string => process.env.LOG_DIR ?? "/data/logs";
 const LOG_RETENTION_DAYS = 7;
+
+export type ProbeResult = { ok: boolean; status: number | null; sample: string | null };
 
 export function getSetting(db: Database, key: string, fallback: number): number {
   const row = db.query<{ value: string }, [string]>("SELECT value FROM settings WHERE key=?").get(key);
@@ -16,22 +19,32 @@ export function getSetting(db: Database, key: string, fallback: number): number 
 
 export async function runTestOnce(db: Database, router: Router): Promise<void> {
   for (const unit of router.unavailableUnits()) {
-    const ok = await probeUnit(unit);
-    if (ok) {
+    const result = await probeUnit(unit);
+    if (result.ok) {
       router.markAvailable(unit.provider.id, unit.gatewayModel);
       await logError({ level: "info", event: "probe_recovered", provider: unit.provider.name, model: unit.gatewayModel });
     } else {
-      await logError({ level: "error", event: "probe_still_failing", provider: unit.provider.name, model: unit.gatewayModel });
+      await logError({
+        level: "error",
+        event: "probe_still_failing",
+        provider: unit.provider.name,
+        model: unit.gatewayModel,
+        ...(result.status !== null ? { status: result.status } : {}),
+        error: result.sample,
+      });
     }
   }
 }
 
-export async function probeUnit(unit: UnitRuntime): Promise<boolean> {
+export async function probeUnit(unit: UnitRuntime): Promise<ProbeResult> {
   const { provider, route, gatewayModel } = unit;
+  const api = route.api as ApiDialect;
+  const headers = buildHeaders(provider, api, new Headers());
+  if (!headers.has("User-Agent")) headers.set("User-Agent", "bunway-probe/1.0");
   try {
-    const res = await fetch(upstreamUrl(provider, route.api as ApiDialect), {
+    const res = await fetch(upstreamUrl(provider, api), {
       method: "POST",
-      headers: buildProbeHeaders(provider, route.api as ApiDialect),
+      headers,
       body: JSON.stringify({
         model: route.provider_model,
         messages: [{ role: "user", content: "ping" }],
@@ -39,19 +52,14 @@ export async function probeUnit(unit: UnitRuntime): Promise<boolean> {
       }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!res.ok) await drainSafe(res);
-    return res.ok;
+    if (res.ok) return { ok: true, status: res.status, sample: null };
+    const sample = (await drainSafe(res)).slice(0, 200);
+    return { ok: false, status: res.status, sample };
   } catch (err) {
-    await logError({ level: "error", event: "probe_failed", provider: provider.name, model: gatewayModel, error: err instanceof Error ? err.message : String(err) });
-    return false;
+    const message = err instanceof Error ? err.message : String(err);
+    await logError({ level: "error", event: "probe_failed", provider: provider.name, model: gatewayModel, error: message });
+    return { ok: false, status: null, sample: message };
   }
-}
-
-function buildProbeHeaders(provider: UnitRuntime["provider"], api: ApiDialect): Headers {
-  const h = new Headers();
-  applyAuth(h, provider, api);
-  h.set("Content-Type", "application/json");
-  return h;
 }
 
 export function startTester(db: Database, router: Router): void {
@@ -95,8 +103,10 @@ export function cleanupOldLogs(dir: string = logDir(), now: Date = new Date()): 
   }
 }
 
-async function drainSafe(res: Response): Promise<void> {
+async function drainSafe(res: Response): Promise<string> {
   try {
-    await res.arrayBuffer();
-  } catch {}
+    return await res.text();
+  } catch {
+    return "";
+  }
 }

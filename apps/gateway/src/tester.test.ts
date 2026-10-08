@@ -65,6 +65,106 @@ describe("runTestOnce", () => {
   });
 });
 
+describe("probe headers and error observability", () => {
+  const baseSetup = (base: string, meta: string) => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key, meta) VALUES (2,'p2',?,'k',?)").run(base, meta);
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority) VALUES ('m',2,'m',1)").run();
+    return new Router(db, () => 5);
+  };
+
+  test("probe carries extra_headers and default UA", async () => {
+    const seen = new Headers();
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        for (const [k, v] of req.headers.entries()) seen.set(k, v);
+        return Response.json({ choices: [], usage: {} });
+      },
+    });
+    const router = baseSetup(`http://localhost:${server.port}`, JSON.stringify({ extra_headers: { "x-opencode-session": "probe-sess" } }));
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    expect(seen.get("x-opencode-session")).toBe("probe-sess");
+    expect(seen.get("user-agent")).toBe("bunway-probe/1.0");
+    expect(seen.get("authorization")).toBe("Bearer k");
+  });
+
+  test("client-style forward header from empty client headers stays unset while extra header wins", async () => {
+    const seen = new Headers();
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        for (const [k, v] of req.headers.entries()) seen.set(k, v);
+        return Response.json({ choices: [], usage: {} });
+      },
+    });
+    const router = baseSetup(`http://localhost:${server.port}`, JSON.stringify({ forward_headers: ["x-opencode-session"], extra_headers: { "x-opencode-session": "static-sess" } }));
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    expect(seen.get("x-opencode-session")).toBe("static-sess");
+  });
+
+  test("probe 400 logs still_failing with status and body sample", async () => {
+    server = Bun.serve({ port: 0, fetch: () => new Response('{"type":"error","message":"MissingSessionID"}', { status: 400 }) });
+    const router = baseSetup(`http://localhost:${server.port}`, "{}");
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    expect(router.pick("m")).toEqual([]);
+    const log = readFileSync(`logs/error-${new Date().toISOString().slice(0, 10)}.log`, "utf8");
+    const line = log.split("\n").find((l) => l.includes("probe_still_failing"))!;
+    const entry = JSON.parse(line);
+    expect(entry.status).toBe(400);
+    expect(entry.error).toContain("MissingSessionID");
+  });
+
+  test("probe 500 logs still_failing with status", async () => {
+    server = Bun.serve({ port: 0, fetch: () => new Response("boom", { status: 500 }) });
+    const router = baseSetup(`http://localhost:${server.port}`, "{}");
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    const log = readFileSync(`logs/error-${new Date().toISOString().slice(0, 10)}.log`, "utf8");
+    const entry = JSON.parse(log.split("\n").find((l) => l.includes("probe_still_failing"))!);
+    expect(entry.status).toBe(500);
+    expect(entry.error).toBe("boom");
+  });
+
+  test("probe 2xx logs recovered and clears unit", async () => {
+    server = Bun.serve({ port: 0, fetch: () => Response.json({ choices: [], usage: {} }) });
+    const router = baseSetup(`http://localhost:${server.port}`, "{}");
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    expect(router.pick("m").length).toBe(1);
+    const log = readFileSync(`logs/error-${new Date().toISOString().slice(0, 10)}.log`, "utf8");
+    expect(log).toContain("probe_recovered");
+    expect(log.includes("probe_still_failing")).toBe(false);
+  });
+
+  test("probe network error logs probe_failed then still_failing with message", async () => {
+    const router = baseSetup("http://localhost:1", "{}");
+    const [p] = router.pick("m");
+    router.markResult("m", p.provider.id, "unavailable");
+    const db = openDb(":memory:");
+    await runTestOnce(db, router);
+    const log = readFileSync(`logs/error-${new Date().toISOString().slice(0, 10)}.log`, "utf8");
+    expect(log).toContain("probe_failed");
+    const entry = JSON.parse(log.split("\n").find((l) => l.includes("probe_still_failing"))!);
+    expect(entry.status).toBeUndefined();
+    expect(typeof entry.error).toBe("string");
+    expect(entry.error.length).toBeGreaterThan(0);
+  });
+});
+
 describe("getSetting", () => {
   test("reads db value with fallback", () => {
     const db = openDb(":memory:");
