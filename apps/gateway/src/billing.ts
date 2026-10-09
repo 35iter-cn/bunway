@@ -118,7 +118,10 @@ export function normalizeUsage(usage: unknown): NormalizedUsage | null {
 
   const dsHit = toNum(u.prompt_cache_hit_tokens) ?? toNum(u.cache_read_input_tokens);
   const cacheCreation = toNum(u.cache_creation_input_tokens);
-  const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
+  // spec 27：responses 方言的缓存明细在 input_tokens_details（chat 在 prompt_tokens_details）
+  const details =
+    (u.prompt_tokens_details as Record<string, unknown> | undefined) ??
+    (u.input_tokens_details as Record<string, unknown> | undefined);
   if (dsHit !== null) {
     cacheRead = dsHit;
   } else if (details && typeof details === "object") {

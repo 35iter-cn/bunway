@@ -292,7 +292,7 @@ describe("client abort", () => {
 });
 
 describe("messages dialect routing", () => {
-  function seedMessages(base: string, api = "messages") {
+  function seedMessages(base: string, api = '["messages"]') {
     const db = openDb(":memory:");
     db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', ?, 'k')").run(base);
     db.query(
@@ -410,8 +410,8 @@ describe("messages dialect routing", () => {
     const db = openDb(":memory:");
     db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1, 'p1', ?, 'k')").run(`http://localhost:${up503.port}`);
     db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2, 'p2', ?, 'k')").run(`http://localhost:${upOk.port}`);
-    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 1, 'm-up', 10, 'messages')").run();
-    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 2, 'm-up', 5, 'messages')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 1, 'm-up', 10, '[\"messages\"]')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('m', 2, 'm-up', 5, '[\"messages\"]')").run();
     db.query("INSERT INTO client_keys(id, name, key) VALUES (1, 'pi', 'sk-test')").run();
     const app = createApp(db, "admin-token");
 

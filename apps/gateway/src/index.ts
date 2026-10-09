@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
+import type { ApiDialect } from "./router";
 import { relay, relayAndBill, injectStreamUsage, bill, providerMeta } from "./relay";
 import { toMessagesRequest } from "./anthropic";
 import { normalizeRequestMessages } from "./reasoning";
@@ -42,40 +43,90 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
     }
 
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-      return handleCompletion(req, keyRow.id);
+      return handleCompletion(req, keyRow.id, "chat");
+    }
+
+    // spec 27：responses 端点回归（纯透传）
+    if (req.method === "POST" && url.pathname === "/v1/responses") {
+      const body = await req.text().catch(() => null);
+      if (body === null) return jsonError(400, "invalid body");
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        return jsonError(400, "invalid body");
+      }
+      if (parsed.store === true || parsed.previous_response_id !== undefined) {
+        return jsonError(400, "bunway /v1/responses only supports stateless usage: store must not be true and previous_response_id must be absent");
+      }
+      return handleCompletion(req, keyRow.id, "responses", body, parsed);
     }
 
     return jsonError(404, "not found");
   }
 
-  async function handleCompletion(req: Request, keyId: number): Promise<Response> {
+  async function handleCompletion(
+    req: Request,
+    keyId: number,
+    endpoint: "chat" | "responses",
+    preBody?: string,
+    preParsed?: Record<string, unknown>
+  ): Promise<Response> {
     let body: string;
-    try {
-      body = await req.text();
-    } catch {
-      return jsonError(400, "invalid body");
+    let parsed: Record<string, unknown>;
+    if (preBody !== undefined && preParsed !== undefined) {
+      body = preBody;
+      parsed = preParsed;
+    } else {
+      try {
+        body = await req.text();
+      } catch {
+        return jsonError(400, "invalid body");
+      }
+      try {
+        parsed = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        return jsonError(400, "invalid body");
+      }
     }
-    const parsed = JSON.parse(body) as { model?: string; stream?: boolean };
     const gatewayModel = parsed.model;
-    if (!gatewayModel) return jsonError(400, "model is required");
+    if (!gatewayModel || typeof gatewayModel !== "string") return jsonError(400, "model is required");
 
-    const candidates = router.pick(gatewayModel);
+    const candidates = router.pick(gatewayModel, Date.now(), endpoint as ApiDialect);
     if (candidates.length === 0) {
-      void logError({ level: "error", event: "no_available_provider", model: gatewayModel });
+      void logError({ level: "error", event: "no_available_provider", model: gatewayModel, endpoint });
       return jsonError(502, `no available provider for ${gatewayModel}`);
     }
 
     const started = Date.now();
     for (const candidate of candidates) {
       const route = candidate.route;
-      const api = (route.api ?? "chat") as "chat" | "messages" | "responses";
+      // api 定序：responses endpoint 仅纯透传；chat endpoint 保留旧 route.api 的 dialect-conversion 语义
+      const api: ApiDialect =
+        endpoint === "responses"
+          ? "responses"
+          : route.api.includes("chat")
+            ? "chat"
+            : route.api.includes("messages")
+              ? "messages"
+              : "responses";
       const bodyJson = JSON.parse(body) as Record<string, unknown>;
       bodyJson.model = route.provider_model;
-      normalizeRequestMessages(bodyJson, providerMeta(candidate.provider).requires_reasoning_content === true);
-      const upstreamBody =
-        api === "messages"
-          ? JSON.stringify(toMessagesRequest(bodyJson))
-          : injectStreamUsage(JSON.stringify(bodyJson)).body;
+      let upstreamBody: string;
+      if (api === "messages") {
+        normalizeRequestMessages(bodyJson, providerMeta(candidate.provider).requires_reasoning_content === true);
+        const converted = toMessagesRequest(bodyJson);
+        if (converted === null) {
+          void logError({ level: "error", event: "upstream_rejected", provider: candidate.provider.name, model: gatewayModel, endpoint: api, error: "messages conversion failed" });
+          continue;
+        }
+        upstreamBody = JSON.stringify(converted);
+      } else if (api === "responses") {
+        upstreamBody = JSON.stringify(bodyJson);
+      } else {
+        normalizeRequestMessages(bodyJson, providerMeta(candidate.provider).requires_reasoning_content === true);
+        upstreamBody = injectStreamUsage(JSON.stringify(bodyJson)).body;
+      }
       try {
         const upstream = await relay({
           db,
@@ -101,17 +152,17 @@ export function createApp(db: Database, adminToken: string, staticDir = "./stati
         router.markResult(gatewayModel, candidate.provider.id, cls);
         if (cls === "nofailover") {
           const errorBody = await upstream.text();
-          void logError({ level: "error", event: "upstream_rejected", provider: candidate.provider.name, status: upstream.status, model: gatewayModel, error_body: errorBody.slice(0, 500) });
+          void logError({ level: "error", event: "upstream_rejected", provider: candidate.provider.name, status: upstream.status, model: gatewayModel, endpoint: api, error_body: errorBody.slice(0, 500) });
           return jsonError(upstream.status, `upstream ${candidate.provider.name} rejected request`);
         }
         const errorBody = await upstream.text();
-        void logError({ level: "error", event: "upstream_failed", provider: candidate.provider.name, status: upstream.status, model: gatewayModel, error_body: errorBody.slice(0, 500) });
+        void logError({ level: "error", event: "upstream_failed", provider: candidate.provider.name, status: upstream.status, model: gatewayModel, endpoint: api, error_body: errorBody.slice(0, 500) });
       } catch (err) {
         if (req.signal.aborted) {
           void logError({ level: "warn", event: "client_aborted", provider: candidate.provider.name, model: gatewayModel, phase: "upstream_call" });
           break;
         }
-        void logError({ level: "error", event: "upstream_error", provider: candidate.provider.name, model: gatewayModel, error: err instanceof Error ? err.message : String(err) });
+        void logError({ level: "error", event: "upstream_error", provider: candidate.provider.name, model: gatewayModel, endpoint: api, error: err instanceof Error ? err.message : String(err) });
         router.markResult(gatewayModel, candidate.provider.id, classifyError(null, err));
       }
     }

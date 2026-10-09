@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "./db";
 import { Router, classifyError } from "./router";
@@ -364,5 +364,54 @@ describe("Router.reload pricing gate", () => {
     db.query("UPDATE routes SET pricing='nope' WHERE provider_id=3").run();
     router.invalidate();
     expect(router.pick("glm").map((p) => p.provider.name)).toEqual(["primary", "backup"]);
+  });
+});
+
+describe("Router dialect admission (spec 27)", () => {
+  test("responses pick excludes units whose api array lacks responses", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'only-chat','http://c','k')").run();
+    db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'dual','http://d','k')").run();
+    db.query(
+      `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api, pricing) VALUES ('m',1,'up',10,'["chat"]','{"default":{"price_input":1,"price_output":1,"price_cache_read":0,"price_cache_write":0}}')`
+    ).run();
+    db.query(
+      `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api, pricing) VALUES ('m',2,'up',5,'["chat","responses"]','{"default":{"price_input":1,"price_output":1,"price_cache_read":0,"price_cache_write":0}}')`
+    ).run();
+    db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
+    const router = new Router(db, () => 5);
+    expect(router.pick("m", Date.now(), "responses").map((u) => u.provider.name)).toEqual(["dual"]);
+    expect(router.pick("m").map((u) => u.provider.name)).toEqual(["only-chat", "dual"]);
+  });
+
+  test("route with non-array api string is dropped with route_config_invalid, valid siblings survive", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/bunway-dialect-`);
+    const prevDir = process.env.LOG_DIR;
+    process.env.LOG_DIR = dir;
+    try {
+      const db = openDb(":memory:");
+      db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'bad','http://b','k')").run();
+      db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (2,'good','http://g','k')").run();
+      db.query(
+        `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api, pricing) VALUES ('m',1,'up',10,'chat','{"default":{"price_input":1,"price_output":1,"price_cache_read":0,"price_cache_write":0}}')`
+      ).run();
+      db.query(
+        `INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api, pricing) VALUES ('m',2,'up',5,'["chat"]','{"default":{"price_input":1,"price_output":1,"price_cache_read":0,"price_cache_write":0}}')`
+      ).run();
+      db.query("UPDATE settings SET value='0' WHERE key='dynamic_priority'").run();
+      const router = new Router(db, () => 5);
+      expect(router.pick("m").map((u) => u.provider.name)).toEqual(["good"]);
+      await Bun.sleep(120);
+      const file = `${dir}/error-${new Date().toISOString().slice(0, 10)}.log`;
+      const lines = existsSync(file) ? readFileSync(file, "utf-8").split("\n").filter((l) => l.includes("route_config_invalid")) : [];
+      expect(lines.length).toBe(1);
+      const entry = JSON.parse(lines[0]) as Record<string, unknown>;
+      expect(entry.api_raw).toBe("chat");
+      expect(entry.route).toBe("m@1/up");
+    } finally {
+      if (prevDir === undefined) delete process.env.LOG_DIR;
+      else process.env.LOG_DIR = prevDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

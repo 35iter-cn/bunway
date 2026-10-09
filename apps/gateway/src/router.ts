@@ -1,12 +1,15 @@
 import type { Database } from "bun:sqlite";
-import type { Provider } from "./db";
+import type { Provider, Route } from "./db";
 import { parsePricing, priceIndex } from "./billing";
 import type { PricedRoute } from "./billing";
+import { parseRouteApis } from "./db";
 import { logError } from "./tester";
 
 export type ErrClass = "unavailable" | "cooldown" | "nofailover" | "ok";
 
 const DYNAMIC_TICK_MS = 600_000;
+
+export type ApiDialect = "chat" | "messages" | "responses";
 
 export type UnitRuntime = {
   provider: Provider;
@@ -50,7 +53,7 @@ export class Router {
     this.orderTs = 0;
     const providers = this.db.query<Provider, []>("SELECT * FROM providers WHERE enabled=1").all();
     const routes = this.db
-      .query<PricedRoute, []>("SELECT * FROM routes ORDER BY gateway_model, priority DESC")
+      .query<Route, []>("SELECT * FROM routes ORDER BY gateway_model, priority DESC")
       .all()
       .flatMap((r): PricedRoute[] => {
         const pricing = parsePricing(r.pricing);
@@ -62,7 +65,18 @@ export class Router {
           });
           return [];
         }
-        return [{ ...r, pricing }];
+        // spec 27：api 仅接受 JSON 数组（无单字符串兼容，坏格式拒用该 unit）
+        const dialects = parseRouteApis(r.api as unknown as string);
+        if (!dialects) {
+          void logError({
+            level: "error",
+            event: "route_config_invalid",
+            route: `${r.gateway_model}@${r.provider_id}/${r.provider_model}`,
+            api_raw: String(r.api).slice(0, 120),
+          });
+          return [];
+        }
+        return [{ ...r, api: dialects, pricing }];
       });
     this.units = [];
     for (const p of providers) {
@@ -142,9 +156,14 @@ export class Router {
     return true;
   }
 
-  pick(gatewayModel: string, now: number = Date.now()): UnitRuntime[] {
+  pick(gatewayModel: string, now: number = Date.now(), dialect?: ApiDialect): UnitRuntime[] {
     this.ensureOrder(now);
-    const cands = this.units.filter((u) => u.gatewayModel === gatewayModel && this.isAvailable(u, now));
+    // dialect 准入（spec 27）：responses 请求必须路由声明 responses（无转换层）；
+    // chat 请求可被 chat（透传）或 messages（转方言）服务，由 handleCompletion 转换，此处仅 responses 需排除
+    const needResponses = dialect === "responses";
+    const cands = this.units.filter(
+      (u) => u.gatewayModel === gatewayModel && (!needResponses || u.route.api.includes("responses")) && this.isAvailable(u, now)
+    );
     const rank = this.ranks.get(gatewayModel);
     if (rank) return cands.sort((a, b) => rank.indexOf(a.provider.id) - rank.indexOf(b.provider.id));
     return cands.sort((a, b) => b.route.priority - a.route.priority);

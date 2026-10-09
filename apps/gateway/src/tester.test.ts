@@ -208,8 +208,8 @@ describe("per-unit probe with dialect", () => {
     });
     const db = openDb(":memory:");
     db.query("INSERT INTO providers(id, name, base_url, api_key) VALUES (1,'pm',?,'mk')").run(`http://localhost:${server.port}`);
-    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('alpha',1,'alpha-up',1,'messages')").run();
-    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('beta',1,'beta-up',1,'chat')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('alpha',1,'alpha-up',1,'[\"messages\"]')").run();
+    db.query("INSERT INTO routes(gateway_model, provider_id, provider_model, priority, api) VALUES ('beta',1,'beta-up',1,'[\"chat\"]')").run();
     const router = new Router(db, () => 5);
     router.markResult("alpha", 1, "unavailable");
     router.markResult("beta", 1, "unavailable");

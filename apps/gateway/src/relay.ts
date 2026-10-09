@@ -92,6 +92,7 @@ export async function relayAndBill(req: RelayRequest, upstream: Response): Promi
   if (!isStream) {
     const text = normalizeResponseBody(await readBodyText(req, upstream.body!.getReader(), idleMs));
     if (req.api === "messages") return messagesNonStream(req, text, upstream);
+    if (req.api === "responses") return responsesNonStream(req, text, upstream);
     billFromJson(req, text);
     return new Response(text, {
       status: upstream.status,
@@ -99,6 +100,20 @@ export async function relayAndBill(req: RelayRequest, upstream: Response): Promi
     });
   }
   return relayStream(req, upstream, idleMs);
+}
+
+// spec 27：responses 非流式 = 透传 body 与 content-type，仅旁路抽 usage 计费
+function responsesNonStream(req: RelayRequest, text: string, upstream: Response): Response {
+  try {
+    const json = JSON.parse(text) as { usage?: unknown };
+    bill(req, json.usage);
+  } catch {
+    bill(req, null);
+  }
+  return new Response(text, {
+    status: upstream.status,
+    headers: new Headers({ "Content-Type": upstream.headers.get("content-type") ?? "application/json" }),
+  });
 }
 
 function messagesNonStream(req: RelayRequest, text: string, upstream: Response): Response {
@@ -175,6 +190,7 @@ export function bill(req: RelayRequest, usage: unknown): NormalizedUsage | null 
 }
 
 async function relayStream(req: RelayRequest, upstream: Response, idleMs: number): Promise<Response> {
+  if (req.api === "responses") return responsesStream(req, upstream, idleMs);
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const isMessages = req.api === "messages";
@@ -286,6 +302,137 @@ async function relayStream(req: RelayRequest, upstream: Response, idleMs: number
           if (interrupted === null && !sawTerminal) {
             interrupted = isMessages ? "upstream closed without message_stop" : "upstream closed without [DONE]";
             void logInterrupted(req, new Error(interrupted), bytesRead);
+          }
+          if (interrupted !== null) {
+            const chunk = {
+              error: {
+                message: `upstream interrupted after ${bytesRead} bytes: ${interrupted} (stream terminated)`,
+                type: "upstream_interrupted",
+                code: "upstream_interrupted",
+              },
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+          } else if (!captured) {
+            void logError({ level: "warn", event: "usage_missing", provider: req.provider.name, model: req.gatewayModel });
+          }
+        }
+        if (!aborted) controller.close();
+        reader.releaseLock();
+      }
+    },
+    cancel() {
+      aborted = true;
+    },
+  });
+
+  const headers = new Headers({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+  });
+  return new Response(stream, { status: upstream.status, headers });
+}
+
+// spec 27：responses 流式 = 逐行透传（不改写），仅旁路抽 completed/incomplete 的 usage 计费；
+// 终结符 = completed/incomplete/failed/error 之一（responses 无 [DONE]）；坏行拦截/idle/client abort 复用既有机制
+async function responsesStream(req: RelayRequest, upstream: Response, idleMs: number): Promise<Response> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let bytesRead = 0;
+  let interrupted: string | null = null;
+  let failedEvent = false;
+  let captured = false;
+  let sawTerminal = false;
+  let aborted = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = upstream.body!.getReader();
+      let pending = "";
+      let malformedCount = 0;
+      let malformedSample: { where: "line" | "tail"; raw_len: number; sample: string } | null = null;
+      try {
+        while (!aborted) {
+          let done: boolean;
+          let value: Uint8Array | undefined;
+          try {
+            ({ done, value } = await readChunk(reader, idleMs, (err) => {
+              interrupted ??= err.message;
+              void logInterrupted(req, err, bytesRead);
+            }));
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            interrupted ??= message;
+            void logInterrupted(req, err instanceof Error ? err : new Error(message), bytesRead);
+            break;
+          }
+          if (done) break;
+          req.firstByteAt ??= Date.now();
+          bytesRead += value.byteLength;
+          const text = pending + decoder.decode(value, { stream: true });
+          const lines = text.split("\n");
+          pending = lines.pop() ?? "";
+          const outLines: string[] = [];
+          for (const line of lines) {
+            if (isMalformedDataLine(line)) {
+              malformedCount++;
+              malformedSample ??= { where: "line", raw_len: line.length, sample: line.slice(0, 120) };
+              continue;
+            }
+            outLines.push(line);
+            const parsed = parseSseData(line);
+            if (parsed === null || typeof parsed !== "object") continue;
+            const obj = parsed as Record<string, unknown>;
+            const type = obj.type;
+            if ((type === "response.completed" || type === "response.incomplete") && !captured) {
+              const respObj = obj.response as Record<string, unknown> | undefined;
+              if (respObj?.usage != null) {
+                bill(req, respObj.usage);
+                captured = true;
+              }
+              sawTerminal = true;
+            } else if (type === "response.completed" || type === "response.incomplete") {
+              sawTerminal = true;
+            }
+            if (type === "response.failed" || type === "error") {
+              sawTerminal = true;
+              failedEvent = true;
+            }
+          }
+          // 透传剔除坏行后的剩余行（event: 行、注释、空行原样保留，尾部补全换行与上游分片对齐）
+          if (outLines.length > 0) controller.enqueue(encoder.encode(outLines.join("\n") + "\n"));
+        }
+        if (pending) {
+          if (isMalformedDataLine(pending)) {
+            malformedCount++;
+            malformedSample ??= { where: "tail", raw_len: pending.length, sample: pending.slice(0, 120) };
+          } else {
+            controller.enqueue(encoder.encode(pending));
+          }
+        }
+      } finally {
+        if (malformedCount > 0 && malformedSample) {
+          void logError({
+            level: "warn",
+            event: "upstream_malformed_sse",
+            provider: req.provider.name,
+            model: req.gatewayModel,
+            bytes_read: bytesRead,
+            malformed_sse_count: malformedCount,
+            where: malformedSample.where,
+            raw_len: malformedSample.raw_len,
+            sample: malformedSample.sample,
+          });
+        }
+        if (aborted) {
+          void logError({ level: "warn", event: "client_aborted", provider: req.provider.name, model: req.gatewayModel, bytes_read: bytesRead });
+          void reader.cancel().catch(() => {});
+        } else {
+          if (interrupted === null && !sawTerminal) {
+            interrupted = "upstream closed without response.completed/incomplete";
+            void logInterrupted(req, new Error(interrupted), bytesRead);
+          }
+          if (failedEvent) {
+            void logError({ level: "error", event: "upstream_failed", provider: req.provider.name, model: req.gatewayModel, bytes_read: bytesRead });
           }
           if (interrupted !== null) {
             const chunk = {

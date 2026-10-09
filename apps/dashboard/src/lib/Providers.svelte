@@ -114,6 +114,7 @@
       pid: c.provider_id,
       baseUrl: p?.base_url ?? "?",
       providerModel: c.provider_model,
+      apis: c.api,
       prio: c.priority,
       i,
       price: `${usd(pricesOf(c).price_input)}/${usd(pricesOf(c).price_output)}`,
@@ -310,6 +311,7 @@
     <div class="pu">{d.baseUrl}</div>
     <table><tbody>
       <tr><td>provider_model</td><td>{d.providerModel}</td></tr>
+      {#if d.apis?.length}<tr><td>api dialects</td><td class="fw">{d.apis.join(" · ")}</td></tr>{/if}
       <tr><td>priority / order</td><td>{d.prio} / #{d.i + 1}</td></tr>
       {#each d.tiers as t (t.rule)}
         <tr class:cur={t.cur}>

@@ -35,14 +35,16 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
 
   type Priced = { ok: true; value: string } | { ok: false; error: string };
 
-  const API_DIALECTS = new Set(["chat", "messages", "responses"]);
+  const API_DIALECTS = ["chat", "messages", "responses"];
 
+  // spec 27：api 仅接受非空字符串数组（单字符串拒绝，存量数据上线前由部署步骤迁移）
   function apiColumn(input: Record<string, unknown>): { ok: true; value: string } | { ok: false; error: string } {
-    if (input.api === undefined) return { ok: true, value: "chat" };
-    if (typeof input.api !== "string" || !API_DIALECTS.has(input.api)) {
-      return { ok: false, error: `api must be one of ${[...API_DIALECTS].join("|")}` };
+    const v = input.api;
+    if (v === undefined) return { ok: true, value: '["chat"]' };
+    if (!Array.isArray(v) || v.length === 0 || !v.every((d) => typeof d === "string" && API_DIALECTS.includes(d))) {
+      return { ok: false, error: `api must be a non-empty array of ${API_DIALECTS.join("|")}` };
     }
-    return { ok: true, value: input.api };
+    return { ok: true, value: JSON.stringify([...new Set(v as string[])]) };
   }
 
   // 写路径唯一闸门：拒绝旧扁平价、验证 pricing 结构，省略时回落四个 0
@@ -66,7 +68,21 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     return { ok: true, value: raw };
   }
 
-  const withPricing = <T extends { pricing: string }>(row: T) => ({ ...row, pricing: parsePricing(row.pricing) });
+  const withPricing = <T extends { pricing: string; api: string }>(row: T) => ({
+    ...row,
+    pricing: parsePricing(row.pricing),
+    // spec 27：GET 输出 api 为数组（存储仍是 TEXT JSON 字符串）
+    api: safeApiList(row.api),
+  });
+
+  function safeApiList(raw: string): string[] {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as string[]) : [raw];
+    } catch {
+      return [raw];
+    }
+  }
 
   const insRoute = db.query(
     `INSERT INTO routes(gateway_model, provider_id, provider_model, api, priority, pricing)

@@ -19,7 +19,7 @@ export function getSetting(db: Database, key: string, fallback: number): number 
 
 export async function runTestOnce(db: Database, router: Router): Promise<void> {
   for (const unit of router.unavailableUnits()) {
-    const result = await probeUnit(unit);
+    const result = await probeUnitDialects(unit);
     if (result.ok) {
       router.markAvailable(unit.provider.id, unit.gatewayModel);
       await logError({ level: "info", event: "probe_recovered", provider: unit.provider.name, model: unit.gatewayModel });
@@ -36,20 +36,34 @@ export async function runTestOnce(db: Database, router: Router): Promise<void> {
   }
 }
 
-export async function probeUnit(unit: UnitRuntime): Promise<ProbeResult> {
+// spec 27：逐方言各打一发，任一通即存活（全挂才 unavailable）
+export async function probeUnitDialects(unit: UnitRuntime): Promise<ProbeResult> {
+  const dialects = unit.route.api;
+  let last: ProbeResult = { ok: false, status: null, sample: "unit has no dialects" };
+  for (const dialect of dialects) {
+    const result = await probeUnit(unit, dialect);
+    if (result.ok) return result;
+    last = result;
+  }
+  return last;
+}
+
+export async function probeUnit(unit: UnitRuntime, dialectOverride?: ApiDialect): Promise<ProbeResult> {
   const { provider, route, gatewayModel } = unit;
-  const api = route.api as ApiDialect;
+  const api = (dialectOverride ?? (route.api as unknown as ApiDialect | undefined) ?? "chat") as ApiDialect;
   const headers = buildHeaders(provider, api, new Headers());
   if (!headers.has("User-Agent")) headers.set("User-Agent", "bunway-probe/1.0");
+  const body =
+    api === "responses"
+      ? { model: route.provider_model, input: "ping", max_output_tokens: 16 }
+      : api === "messages"
+        ? { model: route.provider_model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }
+        : { model: route.provider_model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 };
   try {
     const res = await fetch(upstreamUrl(provider, api), {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: route.provider_model,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
     if (res.ok) return { ok: true, status: res.status, sample: null };
@@ -57,7 +71,7 @@ export async function probeUnit(unit: UnitRuntime): Promise<ProbeResult> {
     return { ok: false, status: res.status, sample };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await logError({ level: "error", event: "probe_failed", provider: provider.name, model: gatewayModel, error: message });
+    await logError({ level: "error", event: "probe_failed", provider: provider.name, model: gatewayModel, dialect: api, error: message });
     return { ok: false, status: null, sample: message };
   }
 }

@@ -14,7 +14,7 @@ export type Route = {
   gateway_model: string;
   provider_id: number;
   provider_model: string;
-  api: string;
+  api: string[];
   priority: number;
   pricing: string;
 };
@@ -44,6 +44,18 @@ export type UsageRow = {
 
 export const ZERO_PRICING =
   '{"default":{"price_input":0,"price_output":0,"price_cache_read":0,"price_cache_write":0}}';
+
+export function parseRouteApis(raw: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((d) => API_DIALECT_SET.has(d))) return null;
+    return [...new Set(parsed as string[])];
+  } catch {
+    return null;
+  }
+}
+
+const API_DIALECT_SET = new Set(["chat", "messages", "responses"]);
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
   test_interval_minutes: "60",
@@ -109,7 +121,7 @@ export function openDb(path: string): Database {
   } catch {}
   const routeCols = (db.query("PRAGMA table_info(routes)").all() as { name: string }[]).map((c) => c.name);
   if (!routeCols.includes("api")) {
-    db.exec("ALTER TABLE routes ADD COLUMN api TEXT NOT NULL DEFAULT 'chat'");
+    db.exec("ALTER TABLE routes ADD COLUMN api TEXT NOT NULL DEFAULT '[\"chat\"]'");
   }
   if (!routeCols.includes("pricing")) {
     db.exec(`ALTER TABLE routes ADD COLUMN pricing TEXT NOT NULL DEFAULT '${ZERO_PRICING}'`);

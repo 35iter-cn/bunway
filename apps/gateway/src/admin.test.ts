@@ -425,30 +425,34 @@ describe("route pricing API", () => {
   });
 });
 
-describe("route api dialect field", () => {
-  test("POST /admin/routes accepts api and returns 400 on invalid value", async () => {
+describe("route api dialect field (spec 27: array-only)", () => {
+  test("POST /admin/routes accepts api array and returns 400 on invalid value", async () => {
     const { db, app } = seed([]);
-    const ok = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: AH, body: JSON.stringify({ gateway_model: "r1", provider_id: 1, provider_model: "up", api: "messages" }) }));
+    const ok = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: AH, body: JSON.stringify({ gateway_model: "r1", provider_id: 1, provider_model: "up", api: ["chat", "responses"] }) }));
     expect(ok.status).toBe(200);
     const row = db.query("SELECT api FROM routes WHERE gateway_model='r1'").get() as { api: string };
-    expect(row.api).toBe("messages");
+    expect(JSON.parse(row.api)).toEqual(["chat", "responses"]);
 
     const bad = await app.fetch(new Request("http://x/admin/routes", { method: "POST", headers: AH, body: JSON.stringify({ gateway_model: "r2", provider_id: 1, provider_model: "up", api: "anthropic" }) }));
     expect(bad.status).toBe(400);
     expect((db.query("SELECT COUNT(*) c FROM routes WHERE gateway_model='r2'").get() as { c: number }).c).toBe(0);
   });
 
-  test("GET /admin/routes returns api; PUT updates it; default is chat", async () => {
+  test("GET /admin/routes returns api array; PUT updates it; default is [chat]; rejects string and empty", async () => {
     const { db, app } = seed([]);
     const one = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { headers: AH }));
-    expect((((await one.json()) as { data: { api: string } }).data).api).toBe("chat");
+    expect(((await one.json()) as { data: { api: string[] } }).data.api).toEqual(["chat"]);
 
-    const put = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: "responses" }) }));
+    const put = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: ["responses"] }) }));
     expect(put.status).toBe(200);
     const row = db.query("SELECT api FROM routes WHERE gateway_model='m'").get() as { api: string };
-    expect(row.api).toBe("responses");
+    expect(JSON.parse(row.api)).toEqual(["responses"]);
 
-    const badPut = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: "nope" }) }));
+    const stringPut = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: "responses" }) }));
+    expect(stringPut.status).toBe(400);
+    const emptyPut = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: [] }) }));
+    expect(emptyPut.status).toBe(400);
+    const badPut = await app.fetch(new Request("http://x/admin/routes?gateway_model=m&provider_id=1&provider_model=m-up", { method: "PUT", headers: AH, body: JSON.stringify({ api: ["nope"] }) }));
     expect(badPut.status).toBe(400);
   });
 
