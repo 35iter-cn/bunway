@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,800;1,400&display=swap');
+@import "@fontsource/jetbrains-mono/300.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/800.css";
 
 :root {
   --bg: #0b0d10; --panel: #12151a; --panel2: #171b21; --line: #23282f;
