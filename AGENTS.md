@@ -1,5 +1,9 @@
 # bunway agent guide
 
+Configuring or deploying this gateway? Start at `llms.txt` — it holds the four
+tasks (deploy, upstream provider, routes, client) with exact calls and a
+verification script. This file covers the repo itself.
+
 ## Layout
 
 - `apps/gateway` — gateway core: plain TypeScript on Bun, zero npm runtime
@@ -12,6 +16,7 @@
 ## Commands
 
 - Gateway tests: `cd apps/gateway && bun test`
+- Smoke the running gateway: `bash demo/smoke.sh <base_url> <admin_token> <client_key> [model]`
 - Console build: `pnpm --filter dashboard build`
 - Full build: `pnpm turbo build`
 

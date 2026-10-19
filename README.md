@@ -33,10 +33,10 @@ curl -sN http://127.0.0.1:3101/v1/chat/completions \
 
 ## Docs
 
-- Deploy & verify (step by step, with expected output): [docs/deploy.md](docs/deploy.md)
+- Deploy & verify (commands + `demo/smoke.sh`): [docs/deploy.md](docs/deploy.md)
 - Gateway reference (endpoints, provider config, failover, pricing): [docs/gateway.md](docs/gateway.md)
 - Ready-to-use agent/client configs (OpenAI SDK, Pi, Hermes): [docs/agents.md](docs/agents.md)
-- Using a coding agent? Point it at [llms.txt](llms.txt)
+- Using a coding agent? Point it at [llms.txt](llms.txt) — deploy, providers, routes, clients as executable tasks
 - 中文文档: [README.zh-CN.md](README.zh-CN.md)
 
 ## License

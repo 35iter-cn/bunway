@@ -1,22 +1,11 @@
 # Connecting agents and clients
 
-Ready-to-use configurations for pointing coding agents and OpenAI SDK clients
-at a running bunway gateway. This page is written for both humans and coding
-agents: every snippet is complete and copy-pasteable, with the exact file to
-edit and the expected outcome.
+Every snippet is complete and copy-pasteable. Configure providers and routes
+first — see [llms.txt](../llms.txt) tasks 2 and 3.
 
-Prerequisites (from [deploy.md](deploy.md)): a running gateway, an **admin
-token**, and a **client key** (create one via `POST /admin/keys`). If your
-upstream requires specific headers, also configure the provider's `meta` per
-[gateway.md](gateway.md#headers-the-upstream-requires).
-
-Every snippet below uses these placeholders:
-
-| Placeholder | Meaning |
-|---|---|
-| `http://GATEWAY_HOST:3001` | Where your gateway runs (e.g. `http://localhost:3001`) |
-| `sk-your-client-key` | A client key created via the admin API |
-| `your-model` | A `gateway_model` you configured on a route |
+Placeholders: `http://GATEWAY_HOST:3001` (where the gateway runs),
+`sk-your-client-key` (created via `POST /admin/keys`), `your-model` (a
+`gateway_model` with at least one route).
 
 ## Generic OpenAI SDK
 
@@ -60,13 +49,12 @@ curl -sN http://GATEWAY_HOST:3001/v1/chat/completions \
   -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Expected: a streaming SSE of `chat.completion.chunk` frames ending with
+Expect a streaming SSE of `chat.completion.chunk` frames ending with
 `data: [DONE]`.
 
 ## Pi coding agent
 
-Edit `~/.pi/agent/models.json` — add a provider entry and list the gateway
-models you want selectable:
+Verified against pi 1.3.0. Edit `~/.pi/agent/models.json`:
 
 ```json
 {
@@ -93,19 +81,15 @@ models you want selectable:
 }
 ```
 
-Field notes for agents editing this file:
+- `api` must be `openai-completions` (the gateway speaks chat completions).
+- `compat.supportsDeveloperRole: false` — send `system` instead of the OpenAI
+  `developer` role, which upstreams reject.
+- `models[].id` must match a `gateway_model`; `cost` is USD per million tokens
+  and only feeds pi's own display (the gateway bills from SQLite).
+- Restart pi; the model appears in the session model list.
 
-- `api` must be `openai-completions` (the gateway speaks chat completions)
-- `compat.supportsDeveloperRole: false` — the gateway's upstreams reject the
-  OpenAI `developer` role; this makes pi use `system` instead
-- `models[].id` must match a `gateway_model` on one of your routes; `cost`
-  is USD per million tokens and is display-only (the gateway bills its own
-  SQLite numbers)
-- restart pi after editing; the model appears in the session model list
-
-If your provider was configured with `forward_headers` (see
-[gateway.md](gateway.md#headers-the-upstream-requires)), the client must send
-those headers. For pi, an extension is the reliable way — create
+If the provider was configured with `forward_headers`, the client must send
+those headers. In pi, an extension is the reliable way — for example
 `~/.pi/agent/extensions/session-header.ts`:
 
 ```ts
@@ -119,67 +103,20 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-This sends the pi session id as `x-opencode-session` on every request —
-stable within a session, unique across sessions, which upstreams that use the
-header as a cache key expect.
-
 ## Hermes Agent
 
-Edit `~/.hermes/config.yaml`:
-
-```yaml
-model:
-  default: your-model
-  provider: custom:bunway
-
-providers:
-  bunway:
-    api: http://GATEWAY_HOST:3001/v1
-    context_length: 128000
-    default_model: your-model
-    key_env: BUNWAY_API_KEY
-```
-
-And put the client key in `~/.hermes/.env`:
-
-```bash
-BUNWAY_API_KEY=sk-your-client-key
-```
-
-Field notes for agents editing these files:
-
-- `model.provider` must be `custom:<providers key>` — without the `custom:`
-  prefix Hermes skips named-provider resolution
-- `api` points at the gateway root including `/v1`; `api_mode` may be omitted
-  (Hermes derives `chat_completions` from the URL)
-- `key_env` is required: Hermes does not derive a key for loopback URLs, and
-  a missing key resolves to `no-key-required` → HTTP 401
-- auxiliary calls (title generation, compression) go through the same
-  provider; if the upstream rejects structured output (`json_schema`), point
-  auxiliary tasks at a model that supports it or disable title generation
-
-If the upstream needs a fixed session header for auxiliary calls that bypass
-request middleware, add a static fallback:
-
-```yaml
-model:
-  default_headers:
-    x-opencode-session: hermes-static
-```
-
-For per-session ids in tool loops, use a Hermes plugin with an `llm_request`
-middleware that sets `extra_headers` (or the gateway-side `extra_headers`
-static value from [gateway.md](gateway.md#headers-the-upstream-requires) when
-one fixed value per provider is acceptable).
+Hermes works through the same OpenAI-compatible surface: a `custom:<name>`
+provider entry with `api: http://GATEWAY_HOST:3001/v1` (including `/v1`), a
+`key_env` pointing at the client key, and `model.provider: custom:bunway`.
+Unlike pi, Hermes does not derive a key for loopback URLs, so `key_env` is
+mandatory. Auxiliary calls (title generation, compression) use the same provider.
 
 ## Verifying any client
-
-After configuring, confirm the full chain from outside:
 
 ```bash
 curl -s http://GATEWAY_HOST:3001/v1/models -H "Authorization: Bearer sk-your-client-key"
 ```
 
-Expected: `{"object":"list","data":[{"id":"your-model",...,"owned_by":"bunway"}]}`,
-then send a chat request from the client itself and check
-`GET /admin/stats` (admin token) shows the request counted and billed.
+Expect every configured `gateway_model`. Then send one request from the client
+itself and confirm `GET /admin/stats` counts it, or run
+`bash demo/smoke.sh http://GATEWAY_HOST:3001 <admin-token> <client-key>`.

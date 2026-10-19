@@ -1,26 +1,122 @@
 # bunway
 
-> Self-hosted LLM gateway on Bun: OpenAI-compatible endpoint, priority failover
-> across upstreams, SQLite billing, single-container dashboard.
+> A self-hosted LLM gateway on Bun: one container, zero runtime dependencies,
+> OpenAI-compatible API, priority failover, SQLite billing, built-in console.
+> Contracts in this file are an index; the source is authoritative.
 
-bunway speaks the OpenAI chat completions API on /v1/chat/completions, so any
-OpenAI SDK works by changing the base URL to http://localhost:3001/v1. Requests
-are routed across upstream providers in priority order: a failing provider is
-marked unavailable or put into cooldown and traffic spills to the next one.
-Every request is priced per token (input, output, cache read, cache write) and
-recorded in SQLite; the built-in /console dashboard shows KPIs, request
-trends, per-provider routing state, and error events. The gateway has zero npm
-runtime dependencies — it runs on Bun alone — and ships as a single Docker
-image. You can try the whole thing without any real API key: the bundled demo
-stack starts a mock upstream and pre-seeds data, and docs/deploy.md walks
-through deployment and verification step by step, each step with the command
-and the expected output. Note that the admin API and /console are meant for a
-trusted network; do not expose the admin port directly to the public internet.
+Read `AGENTS.md` for repo layout and dev commands.
 
-## Docs
+## Source of truth
 
-- [Deploy and verify](docs/deploy.md): step-by-step with expected output
-- [Gateway reference](docs/gateway.md): endpoints, base_url rule, provider config, failover, pricing
-- [Connecting agents and clients](docs/agents.md): ready-to-use configs (OpenAI SDK, Pi, Hermes)
-- [Chinese README](README.zh-CN.md): 中文说明
-- [Source overview](AGENTS.md): repository layout and dev commands
+| Fact | File |
+|---|---|
+| Admin API (paths, payloads, validation, status codes) | `apps/gateway/src/admin.ts` |
+| DB schema and record fields | `apps/gateway/src/db.ts` |
+| Routing order, cooldown, error classification | `apps/gateway/src/router.ts` |
+| Pricing rules, cost math, usage normalization | `apps/gateway/src/billing.ts` |
+| Upstream dialects (chat / messages / responses) | `apps/gateway/src/dialect.ts` |
+| Startup env vars and defaults | `apps/gateway/src/index.ts` (`main`) |
+| Deploy compose files | `demo/`, `deploy/` |
+
+## Task 1 — deploy
+
+Zero-key demo (mock upstream, pre-seeded data, console filled):
+
+```bash
+docker compose -f demo/docker-compose.yml up -d
+bash demo/smoke.sh http://127.0.0.1:3101 demo-admin-token sk-demo
+```
+
+Production (real upstreams, single container):
+
+```bash
+printf 'GATEWAY_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
+docker compose -f deploy/docker-compose.service.yml up -d --build
+bash demo/smoke.sh http://127.0.0.1:3001 <that-admin-token> <client-key>
+```
+
+Env vars an agent must set: `ADMIN_TOKEN` (required, process exits without it),
+`PORT` (3001), `DB_PATH` (/data/gateway.db in the image), `STATIC_DIR`
+(/app/static in the image), `LOG_DIR` (/data/logs). Defaults: `index.ts` + `tester.ts`.
+
+Done when: `demo/smoke.sh` exits 0.
+
+## Task 2 — configure an upstream provider
+
+```bash
+curl -s http://<host>:3001/admin/providers \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"my-upstream","base_url":"https://api.deepseek.com","api_key":"sk-...",
+       "routes":[{"gateway_model":"fast","provider_model":"deepseek-chat","priority":10,
+                  "api":["chat"],
+                  "pricing":{"default":{"price_input":0.15,"price_output":0.6,
+                                        "price_cache_read":0.003,"price_cache_write":0}}}]}'
+```
+
+- `base_url` is the host root **without** `/v1` (the gateway appends
+  `/v1/chat/completions`, `/v1/messages` or `/v1/responses` per route `api`).
+- `api_key` is write-only: `GET /admin/providers` never returns it. To rotate,
+  `PUT /admin/providers/<id>` with the full object including the new key.
+- Optional `meta`: `extra_headers` (static), `forward_headers` (copy named
+  headers from the client request; never list `authorization`/`x-api-key`),
+  `requires_reasoning_content`.
+- Pricing is USD per million tokens.
+
+Done when: `GET /admin/providers` lists it and a chat request reaches it.
+
+## Task 3 — configure gateway routes
+
+A route connects `gateway_model` (what clients ask for) to
+`provider_model` (what the upstream gets) on one provider.
+
+```bash
+curl -s http://<host>:3001/admin/routes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"gateway_model":"fast","provider_id":1,"provider_model":"deepseek-chat",
+       "priority":10,"api":["chat","responses"],
+       "pricing":{"default":{"price_input":0.15,"price_output":0.6,
+                             "price_cache_read":0.003,"price_cache_write":0}}}'
+```
+
+- Several routes with the same `gateway_model` = a failover group; higher
+  `priority` is tried first unless `dynamic_priority` is on.
+- `api` lists the dialects the upstream speaks; `/v1/responses` only routes to
+  routes declaring `responses`.
+- `pricing.rules` adds UTC time windows (`"windows":["12:00-18:00"]`,
+  `days:[1,2,3,4,5]`) for peak/off-peak prices.
+- List: `GET /admin/routes`. Update in place: `PUT /admin/routes?gateway_model=&provider_id=&provider_model=`.
+
+Done when: `GET /v1/models` (client key) includes the `gateway_model` and a chat
+request returns 200.
+
+## Task 4 — point a client or coding agent at it
+
+```bash
+curl -s http://<host>:3001/admin/keys -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"name":"my-agent","key":"sk-mine"}'
+```
+
+Any OpenAI-compatible client: `base_url = http://<host>:3001/v1`,
+`api_key = <client key>`, `api = chat completions`.
+
+Pi (`~/.pi/agent/models.json`) keeps the same shape as any OpenAI provider:
+
+```json
+{"providers":{"bunway":{"baseUrl":"http://HOST:3001/v1","apiKey":"sk-mine",
+  "api":"openai-completions","compat":{"supportsDeveloperRole":false},
+  "models":[{"id":"fast","name":"Fast","cost":{"input":0.15,"output":0.6,"cacheRead":0.003,"cacheWrite":0}}]}}}
+```
+
+`/v1/responses` works only stateless (`store:true` and `previous_response_id`
+are rejected); see `docs/agents.md` for the full recipes.
+
+Done when: the client gets a streamed answer and `/admin/stats` shows the request.
+
+## Hard constraints
+
+- `/admin/*` and `/console` are token-gated but the console HTML is served
+  without auth; keep the port on a trusted network.
+- The gateway has zero npm runtime dependencies — `bun run src/index.ts` is the
+  whole dev loop; there is nothing to `npm install` for the gateway.
+- Never edit the SQLite file directly; providers/routes/keys go through the
+  admin API.
