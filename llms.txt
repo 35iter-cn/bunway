@@ -20,31 +20,51 @@ Read `AGENTS.md` for repo layout and dev commands.
 
 ## Task 1 — deploy
 
-Zero-key demo (mock upstream, pre-seeded data, console filled):
+One container, real upstreams:
 
 ```bash
-docker compose -f demo/docker-compose.yml up -d
-bash demo/smoke.sh http://127.0.0.1:3101 demo-admin-token sk-demo
-```
-
-Console: http://127.0.0.1:3101/console, token `demo-admin-token`. The demo binds
-`127.0.0.1` only; `docker compose -f demo/docker-compose.yml down -v` removes it.
-
-Production (real upstreams, single container):
-
-```bash
+mkdir -p gateway-data
 printf 'GATEWAY_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
 docker compose -f deploy/docker-compose.service.yml up -d --build
-bash demo/smoke.sh http://127.0.0.1:3001 <that-admin-token> <client-key>
 ```
+
+`gateway-data/` must exist before the first start: the container runs as uid 1000
+and Docker would create that bind mount as root, which makes the gateway exit
+with `data dir /data not writable`.
+
+Console: http://localhost:3001/console, token = the one in `deploy/.env`.
+The container starts empty — providers, routes and client keys are created
+through the admin API (tasks 2–4).
 
 Env vars an agent must set: `ADMIN_TOKEN` (required, process exits without it),
 `PORT` (3001), `DB_PATH` (/data/gateway.db in the image), `STATIC_DIR`
 (/app/static in the image), `LOG_DIR` (/data/logs). Defaults: `index.ts` + `tester.ts`.
 
-Done when: `demo/smoke.sh` exits 0.
+Done when: `demo/smoke.sh` exits 0 (run it after task 4).
 
 ## Task 2 — configure an upstream provider
+
+No real upstream yet? Start the bundled **demo provider** — a mock upstream on
+the same compose network, reachable as `http://mock-upstream:3102`:
+
+```bash
+docker compose -f deploy/docker-compose.service.yml --profile demo up -d
+```
+
+Then register it exactly like a real provider (this is the JSON to use until a
+real upstream exists):
+
+```bash
+curl -s http://<host>:3001/admin/providers \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"demo","base_url":"http://mock-upstream:3102","api_key":"demo",
+       "routes":[{"gateway_model":"demo","provider_model":"mock-model","priority":10,
+                  "api":["chat"],
+                  "pricing":{"default":{"price_input":0,"price_output":0,
+                                        "price_cache_read":0,"price_cache_write":0}}}]}'
+```
+
+A real upstream uses the same shape:
 
 ```bash
 curl -s http://<host>:3001/admin/providers \

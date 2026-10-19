@@ -13,3 +13,11 @@ services:
       DB_PATH: /data/gateway.db
     volumes:
       - ../gateway-data:/data
+  mock-upstream:
+    image: oven/bun:1
+    profiles: ["demo"]
+    working_dir: /app
+    command: bun run mock-upstream.ts
+    restart: unless-stopped
+    volumes:
+      - ../demo:/app

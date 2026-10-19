@@ -6,3 +6,4 @@ logs/
 node_modules/
 apps/dashboard/dist/
 apps/gateway/undefined/
+gateway-data/

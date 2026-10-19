@@ -3,14 +3,16 @@
 Production deploy: one container, real upstreams. Verification is the same
 script everywhere — `demo/smoke.sh`.
 
-No API key yet? Run the zero-key demo stack first (mock upstream, seeded
-console, two commands) — it lives in [llms.txt](../llms.txt) task 1 and the
-[README](../README.md) quick start. Same image, same smoke script.
+No API key yet? Start the same stack with the bundled demo provider
+(`--profile demo`) and register it as an upstream — the exact compose command
+and provider JSON are in [llms.txt](../llms.txt) task 2. Same deployment, no
+second environment.
 
 ## Production
 
 ```bash
 git clone https://github.com/35iter-cn/bunway && cd bunway
+mkdir -p gateway-data
 printf 'GATEWAY_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
 docker compose -f deploy/docker-compose.service.yml up -d --build
 ```
@@ -21,8 +23,10 @@ expect: image builds (pnpm dashboard build + bun gateway build), then
 Compose reads `.env` from `deploy/`, not the repo root. Everything the container
 keeps lives in `/data`, bound to `gateway-data/` next to the repo root:
 `gateway.db` (providers, routes, keys, usage) and
-`logs/error-YYYY-MM-DD.log` (7-day retention). The container runs as uid 1000 —
-if `/data` permission errors appear, `sudo chown -R 1000:1000 gateway-data`.
+`logs/error-YYYY-MM-DD.log` (7-day retention). Create that directory first —
+the container runs as uid 1000, and Docker would otherwise create the bind
+mount as root, so the gateway exits with `data dir /data not writable`. If the
+host user is not uid 1000: `sudo chown -R 1000:1000 gateway-data`.
 
 Env vars and their defaults: `ADMIN_TOKEN` (required), `PORT` (`3001`),
 `DB_PATH` (`data/gateway.db`; `/data/gateway.db` in the image), `STATIC_DIR`

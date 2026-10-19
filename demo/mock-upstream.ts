@@ -17,6 +17,15 @@ Bun.serve({
     if (url.pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
     const body = await req.json();
     const text = "Hello from the mock upstream.";
+    if (body.stream === false) {
+      return Response.json({
+        id: "mock-1",
+        object: "chat.completion",
+        model: body.model,
+        choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+      });
+    }
     const stream = new ReadableStream({
       async start(c) {
         for (const t of text.split(" ")) {

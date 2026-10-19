@@ -8,22 +8,23 @@
 
 ## Quick start
 
-No API key needed — the demo ships a mock upstream and pre-seeded data:
+No real API key needed — the same stack can run a bundled mock upstream as a
+demo provider:
 
 ```bash
-git clone https://github.com/35iter-cn/bunway
-cd bunway
-docker compose -f demo/docker-compose.yml up -d
+git clone https://github.com/35iter-cn/bunway && cd bunway
+mkdir -p gateway-data
+printf 'GATEWAY_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
+docker compose -f deploy/docker-compose.service.yml --profile demo up -d --build
 ```
 
-Open http://127.0.0.1:3101/console (token: `demo-admin-token`), then send a real request through the gateway:
+Open http://127.0.0.1:3001/console (token from `deploy/.env`), then register the
+demo provider and a client key — the copy-paste JSON and the verification
+script are in [llms.txt](llms.txt) tasks 2–4.
 
-```bash
-curl -sN http://127.0.0.1:3101/v1/chat/completions \
-  -H "Authorization: Bearer sk-demo" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"fast-model","messages":[{"role":"user","content":"hi"}]}'
-```
+`mkdir -p gateway-data` is required before the first start: the container runs
+as uid 1000 and Docker would otherwise create that bind-mounted directory as
+root, which makes the gateway exit with `data dir /data not writable`.
 
 ## Why bunway
 
