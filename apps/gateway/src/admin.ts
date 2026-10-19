@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Router } from "./router";
 import { existsSync, readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { PRICE_KEYS, parsePricing, resolvePrices, tierOf, nextSwitch, priceIndex } from "./billing";
 import { ZERO_PRICING } from "./db";
 
@@ -26,7 +27,9 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
   };
 
   function auth(req: Request): boolean {
-    return (req.headers.get("authorization") ?? "") === `Bearer ${adminToken}`;
+    const got = Buffer.from(req.headers.get("authorization") ?? "");
+    const want = Buffer.from(`Bearer ${adminToken}`);
+    return got.length === want.length && timingSafeEqual(got, want);
   }
 
   function invalidate(): void {
@@ -108,7 +111,7 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
         const rows = db.query("SELECT * FROM providers").all() as Array<{ id: number }>;
         return Response.json({
           data: rows.map((p) => ({
-            ...p,
+            ...withoutSecret(p),
             unavailable: states[p.id]?.unavailable ?? false,
             cooldown_until: states[p.id]?.cooldown_until ?? 0,
             units: unitStates
@@ -127,7 +130,7 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
         const provider = db.query("SELECT * FROM providers WHERE id=?").get(id) as Record<string, unknown> | undefined;
         if (!provider) return jsonError(404, "provider not found");
         const routes = db.query("SELECT * FROM routes WHERE provider_id=?").all(id).map(withPricing);
-        return Response.json({ data: { ...provider, routes } });
+        return Response.json({ data: { ...withoutSecret(provider), routes } });
       }
       if (method === "PUT") return upsertProvider(req, id);
       if (method === "DELETE") {
@@ -186,7 +189,7 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
     }
 
     if (path === "/admin/keys") {
-      if (method === "GET") return Response.json({ data: db.query("SELECT * FROM client_keys").all() });
+      if (method === "GET") return Response.json({ data: db.query("SELECT * FROM client_keys").all().map(withoutSecret) });
       if (method === "POST") return createKey(req);
     }
 
@@ -587,4 +590,9 @@ export function runAdminRoutes(db: Database, adminToken: string, router: Router)
 
 function jsonError(status: number, message: string): Response {
   return Response.json({ error: { message } }, { status });
+}
+
+function withoutSecret(row: unknown): Record<string, unknown> {
+  const { api_key: _apiKey, key: _key, ...rest } = row as Record<string, unknown>;
+  return rest;
 }

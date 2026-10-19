@@ -101,6 +101,12 @@ compose file creates a `gateway-data` directory next to the repo root and the
 container runs as uid 1000; if you see permission errors on `/data`, run
 `sudo chown -R 1000:1000 gateway-data` and start again.
 
+The container keeps everything under `/data`, which the compose file binds to
+`gateway-data/` next to the repo root: `gateway.db` (providers, routes, keys,
+usage) and `logs/error-YYYY-MM-DD.log` (error events, kept 7 days). Env
+variables, their defaults, and the runtime settings are listed in
+[gateway.md](gateway.md#environment-variables).
+
 ### 4. Create a client key
 
 ```bash

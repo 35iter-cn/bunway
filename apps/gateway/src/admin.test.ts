@@ -267,25 +267,24 @@ describe("GET /admin/stats/timeseries", () => {
 describe("GET /admin/errors", () => {
   test("aggregates event counts and recent stream from JSONL", async () => {
     const { app } = seed([]);
-    const day = new Date().toISOString().slice(0, 10);
-    writeFileSync(
-      join(dirs[0], `error-${day}.log`),
-      [
-        JSON.stringify({ ts: `${day}T07:10:37Z`, event: "upstream_error", provider: "p1" }),
-        JSON.stringify({ ts: `${day}T07:11:00Z`, event: "client_aborted", provider: "p1", phase: "upstream_call" }),
-        JSON.stringify({ ts: `${day}T07:12:00Z`, event: "upstream_error", provider: "p1" }),
-        "not-json",
-        "",
-      ].join("\n")
-    );
-    const res = await app.fetch(new Request("http://x/admin/errors?range=today&limit=50", { headers: AH }));
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    const entries = [
+      { ts: at(30), event: "upstream_error", provider: "p1" },
+      { ts: at(20), event: "client_aborted", provider: "p1", phase: "upstream_call" },
+      { ts: at(10), event: "upstream_error", provider: "p1" },
+    ];
+    for (const entry of entries) {
+      writeFileSync(join(dirs[0], `error-${entry.ts.slice(0, 10)}.log`), `${JSON.stringify(entry)}\n`, { flag: "a" });
+    }
+    writeFileSync(join(dirs[0], `error-${entries[2].ts.slice(0, 10)}.log`), "not-json\n\n", { flag: "a" });
+    const res = await app.fetch(new Request("http://x/admin/errors?range=7d&limit=50", { headers: AH }));
     const { data } = await res.json();
     expect(data.counts).toEqual({ upstream_error: 2, client_aborted: 1 });
     expect(data.recent.length).toBe(3);
     expect(data.recent[0].event).toBe("upstream_error");
     expect(Object.keys(data.byEvent).sort()).toEqual(["client_aborted", "upstream_error"]);
-    expect(data.byEvent.upstream_error.map((e: { ts: string }) => e.ts)).toEqual([`${day}T07:12:00Z`, `${day}T07:10:37Z`]);
-    expect(data.byEvent.client_aborted).toEqual([{ ts: `${day}T07:11:00Z`, event: "client_aborted", provider: "p1", phase: "upstream_call" }]);
+    expect(data.byEvent.upstream_error.map((e: { ts: string }) => e.ts)).toEqual([entries[2].ts, entries[0].ts]);
+    expect(data.byEvent.client_aborted).toEqual([entries[1]]);
   });
 
   test("missing log dir → empty, no throw", async () => {
@@ -461,5 +460,54 @@ describe("route api dialect field (spec 27: array-only)", () => {
     const res = await app.fetch(new Request("http://x/admin/providers", { headers: AH }));
     const data = (await res.json()).data as Array<Record<string, unknown>>;
     expect(data[0].units).toEqual([{ gateway_model: "m", unavailable: false, cooldown_until: 0 }]);
+  });
+});
+
+describe("admin auth", () => {
+  test("wrong-length and wrong tokens are rejected without throwing", async () => {
+    const { app } = seed([]);
+    for (const header of ["Bearer admin-token-longer", "Bearer short", "Bearer admin-toke", "admin-token", ""]) {
+      const res = await app.fetch(new Request("http://x/admin/settings", { headers: { Authorization: header } }));
+      expect(res.status).toBe(401);
+    }
+    const ok = await app.fetch(new Request("http://x/admin/settings", { headers: AH }));
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe("admin read endpoints never return secrets", () => {
+  test("GET /admin/providers and /admin/providers/:id omit api_key", async () => {
+    const { app } = seed([]);
+    const list = (await (await app.fetch(new Request("http://x/admin/providers", { headers: AH }))).json()).data as Array<Record<string, unknown>>;
+    expect(list[0].api_key).toBeUndefined();
+    expect(list[0].name).toBe("p1");
+    expect(list[0].base_url).toBe("http://up");
+    expect(list[0].units).toEqual([{ gateway_model: "m", unavailable: false, cooldown_until: 0 }]);
+
+    const one = (await (await app.fetch(new Request("http://x/admin/providers/1", { headers: AH }))).json()).data as Record<string, unknown>;
+    expect(one.api_key).toBeUndefined();
+    expect(one.name).toBe("p1");
+    expect(Array.isArray(one.routes)).toBe(true);
+  });
+
+  test("GET /admin/keys omits key but keeps name and enabled", async () => {
+    const { app } = seed([]);
+    const data = (await (await app.fetch(new Request("http://x/admin/keys", { headers: AH }))).json()).data as Array<Record<string, unknown>>;
+    expect(data[0].key).toBeUndefined();
+    expect(data[0].name).toBe("pi");
+    expect(data[0].enabled).toBe(1);
+  });
+
+  test("PUT /admin/providers still stores the api_key from the body", async () => {
+    const { app, db } = seed([]);
+    const res = await app.fetch(
+      new Request("http://x/admin/providers/1", {
+        method: "PUT",
+        headers: AH,
+        body: JSON.stringify({ name: "p1", base_url: "http://up", api_key: "rotated-key" }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect((db.query("SELECT api_key FROM providers WHERE id=1").get() as { api_key: string }).api_key).toBe("rotated-key");
   });
 });
