@@ -20,4 +20,4 @@ Please do not open a public issue for anything you believe is exploitable.
 
 ## Supported versions
 
-Only the latest release (`v0.1.0` and later) is supported.
+Only the latest release (`v0.2.0` and later) is supported.
