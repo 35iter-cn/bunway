@@ -1,27 +1,13 @@
 # Deploy and verify
 
-Two paths: a zero-key demo (mock upstream, seeded data) and a production
-container with real providers. Both end with the same verification script.
+Production deploy: one container, real upstreams. Verification is the same
+script everywhere — `demo/smoke.sh`.
 
-## Demo (no API key, ~2 minutes)
+No API key yet? Run the zero-key demo stack first (mock upstream, seeded
+console, two commands) — it lives in [llms.txt](../llms.txt) task 1 and the
+[README](../README.md) quick start. Same image, same smoke script.
 
-```bash
-docker compose -f demo/docker-compose.yml up -d
-bash demo/smoke.sh http://127.0.0.1:3101 demo-admin-token sk-demo
-```
-
-expect: six `ok` lines (health, console, rejected admin token, admin token,
-client key, chat), two `info` lines with provider/route/model counts and token
-usage, then `smoke passed`.
-
-Then open http://127.0.0.1:3101/console and enter token `demo-admin-token` —
-expect KPI cards with non-zero traffic, a 7-day trend, a routing topology, and
-one seeded error event.
-
-Stop: `docker compose -f demo/docker-compose.yml down -v`. The demo binds
-`127.0.0.1` only.
-
-## Production (single container, real upstreams)
+## Production
 
 ```bash
 git clone https://github.com/35iter-cn/bunway && cd bunway

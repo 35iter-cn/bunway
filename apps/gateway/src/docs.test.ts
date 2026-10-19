@@ -28,7 +28,7 @@ describe("docs match the code", () => {
   test("the default port in code is the one the docs tell you to open", () => {
     expect(indexTs).toContain("3001");
     expect(deployMd).toContain("3001");
-    expect(deployMd).toContain("3101");
+    expect(llmsTxt).toContain("3101");
     expect(readme).toContain("3101");
   });
 
@@ -47,6 +47,13 @@ describe("docs match the code", () => {
     expect(llmsTxt).toContain("3101");
     expect(llmsTxt).toContain("sk-demo");
     expect(root("demo/seed.ts")).toContain("sk-demo");
+  });
+
+  test("the demo stack is described in exactly one place", () => {
+    expect(llmsTxt).toContain("demo/docker-compose.yml");
+    expect(readme).toContain("demo/docker-compose.yml");
+    expect(deployMd).not.toContain("demo/docker-compose.yml up");
+    expect(deployMd).toContain("llms.txt");
   });
 
   test("keys stay write-only in the docs", () => {

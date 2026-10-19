@@ -27,6 +27,9 @@ docker compose -f demo/docker-compose.yml up -d
 bash demo/smoke.sh http://127.0.0.1:3101 demo-admin-token sk-demo
 ```
 
+Console: http://127.0.0.1:3101/console, token `demo-admin-token`. The demo binds
+`127.0.0.1` only; `docker compose -f demo/docker-compose.yml down -v` removes it.
+
 Production (real upstreams, single container):
 
 ```bash
